@@ -1,0 +1,216 @@
+// cssparse_tests.nv — the grammar of Level 3, and what the parsed
+// value lets a caller do.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// css-select-nv.cssparse.<fn>`.  What is asserted is that the parsed
+// selector is a tree a caller can read, that `:not()` is a field on a
+// compound rather than a nested selector, and that the an+b
+// micro-syntax is parsed into two numbers.
+
+use std.test
+use cssparse
+use csserror
+
+@test
+fn test_a_selector_is_a_list_of_alternatives_a_caller_can_read() [io]
+    // The whole reason this package's parse is not opaque: a linter, a
+    // template checker and a renaming tool all walk this.
+    match cssparse.parse("h1, h2.title")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.case("two alternatives, in the order they were written")
+            test.assert(list.len(selector.alternatives) == 2)
+            test.assert(selector.source == "h1, h2.title")
+
+            test.case("the second has one compound holding two simple selectors")
+            let second = selector.alternatives[1]
+            test.assert(list.len(second.compounds) == 1)
+            test.assert(list.len(second.compounds[0].simples) == 2)
+
+            test.case("and no combinators, because there is one compound")
+            test.assert(list.len(second.combinators) == 0)
+
+@test
+fn test_the_combinators_sit_between_the_compounds() [io]
+    match cssparse.parse_one("main > .row a + span")
+        Err(fault)  => test.fail(fault.message())
+        Ok(complex) =>
+            test.case("four compounds and three combinators")
+            test.assert(list.len(complex.compounds) == 4)
+            test.assert(list.len(complex.combinators) == 3)
+
+            test.case("in the order they join them")
+            test.assert(cssparse.combinator_text(complex.combinators[0]) == " > ")
+            test.assert(cssparse.combinator_text(complex.combinators[1]) == " ")
+            test.assert(cssparse.combinator_text(complex.combinators[2]) == " + ")
+
+    test.case("a combinator with nothing on one side is refused")
+    match cssparse.parse("a >")
+        Ok(_)      => test.fail("that combinator has nothing after it")
+        Err(fault) => test.assert(csserror.code(fault) == "dangling_combinator")
+
+@test
+fn test_an_implied_universal_selector_is_written_into_the_value() [io]
+    // So `"> p"` and `"* > p"` parse to the same shape and a caller
+    // walking the tree never meets an empty compound.
+    match cssparse.parse_one(".row > p")
+        Err(fault)  => test.fail(fault.message())
+        Ok(complex) =>
+            test.case("every compound holds at least one simple selector")
+            test.assert(list.len(complex.compounds[0].simples) == 1)
+            test.assert(list.len(complex.compounds[1].simples) == 1)
+
+    test.case("and the universal selector prints as itself")
+    test.assert(cssparse.simple_text(CssUniversal) == "*")
+
+@test
+fn test_not_is_a_field_on_a_compound_and_never_nests() [io]
+    // Level 3 section 6.6.7 admits exactly one simple selector inside
+    // `:not()` and forbids nesting, so two lists describe a compound
+    // completely and nothing in the parsed value is recursive.
+    match cssparse.parse_one("a:not(.external):not([download])")
+        Err(fault)  => test.fail(fault.message())
+        Ok(complex) =>
+            test.case("the positive part and the negated part are separate")
+            let compound = complex.compounds[0]
+            test.assert(list.len(compound.simples) == 1)
+            test.assert(list.len(compound.negations) == 2)
+
+    test.case("a :not() holding a compound is Level 4, and is refused by name")
+    match cssparse.parse("a:not(.a.b)")
+        Ok(_)      => test.fail("Level 3 admits one simple selector")
+        Err(fault) =>
+            test.assert(csserror.code(fault) == "bad_negation")
+
+@test
+fn test_the_seven_attribute_operators_and_no_others() [io]
+    test.case("each one parses")
+    test.assert(cssparse.is_valid("[href]"))
+    test.assert(cssparse.is_valid("[href=\"/a\"]"))
+    test.assert(cssparse.is_valid("[class~=\"row\"]"))
+    test.assert(cssparse.is_valid("[lang|=\"en\"]"))
+    test.assert(cssparse.is_valid("[href^=\"/\"]"))
+    test.assert(cssparse.is_valid("[href$=\".pdf\"]"))
+    test.assert(cssparse.is_valid("[href*=\"?\"]"))
+
+    test.case("and prints back as it is written")
+    test.assert(cssparse.operator_text(CssExists) == "")
+    test.assert(cssparse.operator_text(CssEquals) == "=")
+    test.assert(cssparse.operator_text(CssIncludes) == "~=")
+    test.assert(cssparse.operator_text(CssDashMatch) == "|=")
+    test.assert(cssparse.operator_text(CssPrefix) == "^=")
+    test.assert(cssparse.operator_text(CssSuffix) == "$=")
+    test.assert(cssparse.operator_text(CssSubstring) == "*=")
+
+    test.case("an eighth operator is refused, naming what was written")
+    match cssparse.parse("[href!=\"/a\"]")
+        Ok(_)      => test.fail("there are seven operators")
+        Err(fault) => test.assert(csserror.code(fault) == "bad_operator")
+
+    test.case("an unclosed bracket says where it opened")
+    match cssparse.parse("a[href")
+        Ok(_)      => test.fail("that bracket is never closed")
+        Err(fault) =>
+            test.assert(csserror.code(fault) == "unclosed")
+            test.assert(csserror.offset(fault) == 1)
+
+@test
+fn test_the_an_plus_b_micro_syntax_is_parsed_into_two_numbers() [io]
+    // The part of CSS most often reimplemented wrongly, which is why
+    // it is public.
+    test.case("the two keywords")
+    match cssparse.parse_nth("odd")
+        Ok(nth)    =>
+            test.assert(nth.step == 2)
+            test.assert(nth.offset == 1)
+        Err(fault) => test.fail(fault.message())
+    match cssparse.parse_nth("even")
+        Ok(nth)    =>
+            test.assert(nth.step == 2)
+            test.assert(nth.offset == 0)
+        Err(fault) => test.fail(fault.message())
+
+    test.case("a bare number is a single position")
+    match cssparse.parse_nth("3")
+        Ok(nth)    =>
+            test.assert(nth.step == 0)
+            test.assert(nth.offset == 3)
+        Err(fault) => test.fail(fault.message())
+
+    test.case("a bare n is every position")
+    match cssparse.parse_nth("n")
+        Ok(nth)    =>
+            test.assert(nth.step == 1)
+            test.assert(nth.offset == 0)
+        Err(fault) => test.fail(fault.message())
+
+    test.case("and a negative step counts down to the offset")
+    match cssparse.parse_nth("-n+3")
+        Ok(nth)    =>
+            test.assert(nth.step == 0 - 1)
+            test.assert(nth.offset == 3)
+        Err(fault) => test.fail(fault.message())
+
+    test.case("positions count from one, which is CSS's convention")
+    match cssparse.parse_nth("2n+1")
+        Ok(nth)    =>
+            test.assert(cssparse.nth_matches(nth, 1))
+            test.assert(not cssparse.nth_matches(nth, 2))
+            test.assert(cssparse.nth_matches(nth, 3))
+        Err(fault) => test.fail(fault.message())
+
+    test.case("and a body that is not the micro-syntax is refused")
+    match cssparse.parse("li:nth-child(2n+)")
+        Ok(_)      => test.fail("that is not an an+b expression")
+        Err(fault) => test.assert(csserror.code(fault) == "bad_nth")
+
+@test
+fn test_the_structural_pseudo_classes_print_back_as_they_were_written() [io]
+    test.case("the ones with no body")
+    test.assert(cssparse.pseudo_text(CssRoot) == ":root")
+    test.assert(cssparse.pseudo_text(CssEmpty) == ":empty")
+    test.assert(cssparse.pseudo_text(CssFirstChild) == ":first-child")
+    test.assert(cssparse.pseudo_text(CssLastOfType) == ":last-of-type")
+    test.assert(cssparse.pseudo_text(CssOnlyChild) == ":only-child")
+    test.assert(cssparse.pseudo_text(CssOnlyOfType) == ":only-of-type")
+    test.assert(cssparse.pseudo_text(CssFirstOfType) == ":first-of-type")
+    test.assert(cssparse.pseudo_text(CssLastChild) == ":last-child")
+
+    test.case("and the four that carry an an+b")
+    test.assert(cssparse.pseudo_text(CssNthChild(2, 1)) == ":nth-child(2n+1)")
+    test.assert(cssparse.pseudo_text(CssNthLastChild(0, 1)) == ":nth-last-child(1)")
+    test.assert(cssparse.pseudo_text(CssNthOfType(1, 0)) == ":nth-of-type(n)")
+    test.assert(cssparse.pseudo_text(CssNthLastOfType(2, 0)) == ":nth-last-of-type(2n)")
+
+@test
+fn test_a_selector_prints_back_canonically_and_names_its_parts() [io]
+    match cssparse.parse("div>a.row#main")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.case("one space around each combinator, whatever was written")
+            test.assert(cssparse.selector_text(selector) == "div > a.row#main")
+
+            test.case("every class and every tag the selector mentions")
+            test.assert(list.len(cssparse.class_names(selector)) == 1)
+            test.assert(cssparse.class_names(selector)[0] == "row")
+            test.assert(list.len(cssparse.type_names(selector)) == 2)
+
+    test.case("a simple selector prints on its own")
+    test.assert(cssparse.simple_text(CssId("main")) == "#main")
+    test.assert(cssparse.simple_text(CssClass("row")) == ".row")
+    test.assert(cssparse.simple_text(CssType("div", "")) == "div")
+
+@test
+fn test_an_empty_selector_is_a_refusal_and_not_a_selector_with_nothing_in_it() [io]
+    test.case("nothing at all")
+    match cssparse.parse("")
+        Ok(_)      => test.fail("an empty string is not a selector")
+        Err(fault) => test.assert(csserror.code(fault) == "empty_selector")
+
+    test.case("and a group with an empty member")
+    match cssparse.parse("a,,b")
+        Ok(_)      => test.fail("that group has an empty member")
+        Err(fault) => test.assert(csserror.code(fault) == "empty_selector")
+
+    test.case("which is not the same as a selector that matches nothing")
+    test.assert(cssparse.is_valid("nosuchtag"))

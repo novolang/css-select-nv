@@ -1,0 +1,197 @@
+// cssmatch_tests.nv — a parsed selector against html-nv's tree.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// css-select-nv.cssmatch.<fn>` or a function it calls.  What is
+// asserted is that the structural pseudo-classes count only element
+// siblings, that a combinator is answered by walking upwards, and that
+// a node appears once in a result however many alternatives it
+// matched.
+
+use std.test
+use cssmatch
+use cssparse
+use htmlparse
+use htmltree
+
+fn page() -> htmltree.HtmlDoc
+    let head = "<main id=\"main\"><ul class=\"row\">"
+    let items = "<li>a</li><!-- c --><li class=\"on\">b</li>text<li>c</li>"
+    htmlparse.parse(head + items + "</ul><p>tail</p></main>")
+
+fn compiled(text: Str) -> cssparse.CssSelector
+    match cssparse.parse(text)
+        Ok(selector) => selector
+        Err(_)       => CssSelector { source: text, alternatives: [] }
+
+@test
+fn test_a_combinator_is_answered_by_walking_upwards() [io]
+    // Written left to right and matched right to left, which is why
+    // one node can be tested without the tree being walked from the
+    // root.
+    let doc = page()
+    let found = cssmatch.select_all(doc, htmltree.root(doc), compiled("main > ul li"))
+
+    test.case("three list items, through a child and then a descendant")
+    test.assert(list.len(found) == 3)
+
+    test.case("the child combinator does not reach a grandchild")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("main > li"))) == 0)
+
+    test.case("the adjacent sibling combinator skips text and comments")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("li + li"))) == 2)
+
+    test.case("and the general sibling combinator reaches every later one")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("ul ~ p"))) == 1)
+
+@test
+fn test_the_structural_pseudo_classes_count_only_element_siblings() [io]
+    // Level 3 section 6.6.5 counts elements, and this document has a
+    // comment and a text node among the list items precisely so that a
+    // matcher that counted nodes would get a different answer.
+    let doc = page()
+
+    test.case("first and last, with the non-elements ignored")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("li:first-child"))) == 1)
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("li:last-child"))) == 1)
+
+    test.case("nth-child counts from one")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("li:nth-child(2)"))) == 1)
+
+    test.case("odd picks the first and the third")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("li:nth-child(odd)"))) == 2)
+
+    test.case("nth-last-child counts from the end")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("li:nth-last-child(1)"))) == 1)
+
+    test.case("and the positions the pseudo-classes are answered from are public")
+    let items = cssmatch.select_all(doc, htmltree.root(doc), compiled("li"))
+    test.assert(cssmatch.child_position(doc, items[1]) == 2)
+    test.assert(cssmatch.sibling_count(doc, items[1]) == 3)
+    test.assert(cssmatch.type_position(doc, items[2]) == 3)
+
+@test
+fn test_of_type_counts_only_the_siblings_with_the_same_tag() [io]
+    let doc = htmlparse.parse("<div><p>a</p><span>b</span><p>c</p></div>")
+
+    test.case("the second p is the last of its type, and not the last child")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("p:last-of-type"))) == 1)
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("p:last-child"))) == 1)
+
+    test.case("the span is the only one of its type")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("span:only-of-type"))) == 1)
+
+    test.case("and nothing here is an only child")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled(":only-child"))) == 0)
+
+@test
+fn test_empty_is_about_content_and_a_comment_is_not_content() [io]
+    let doc = htmlparse.parse("<div><p></p><p><!-- x --></p><p> </p></div>")
+
+    test.case("an element with no child nodes, and one holding only a comment")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("p:empty"))) == 2)
+
+    test.case("whitespace is content, so the third is not empty")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("div:empty"))) == 0)
+
+@test
+fn test_a_negation_excludes_and_the_rest_of_the_compound_still_applies() [io]
+    let doc = page()
+
+    test.case("every list item that is not the marked one")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("li:not(.on)"))) == 2)
+
+    test.case("and the compound as a whole, tested against one node")
+    let marked = cssmatch.select(doc, htmltree.root(doc), compiled(".on"))
+    test.assert(cssmatch.matches(doc, marked, compiled("li.on")))
+    test.assert(not cssmatch.matches(doc, marked, compiled("li:not(.on)")))
+
+    test.case("one compound and one simple selector are each testable alone")
+    match cssparse.parse_one("li.on")
+        Err(fault)  => test.fail(fault.message())
+        Ok(complex) =>
+            test.assert(cssmatch.matches_complex(doc, marked, complex))
+            test.assert(cssmatch.matches_compound(doc, marked, complex.compounds[0]))
+    test.assert(cssmatch.matches_simple(doc, marked, CssClass("on")))
+
+@test
+fn test_a_node_appears_once_however_many_alternatives_it_matched() [io]
+    let doc = page()
+
+    test.case("a selector list, and one node that matches both halves")
+    let found = cssmatch.select_all(doc, htmltree.root(doc), compiled("li, .on"))
+    test.assert(list.len(found) == 3)
+
+    test.case("and which alternative matched is answerable, because it decides specificity")
+    let marked = cssmatch.select(doc, htmltree.root(doc), compiled(".on"))
+    test.assert(cssmatch.matching_alternative(doc, marked, compiled("p, li")) == 1)
+    test.assert(cssmatch.matching_alternative(doc, marked, compiled("p, span")) == 0 - 1)
+
+@test
+fn test_select_stops_where_the_caller_asked_it_to() [io]
+    let doc = page()
+
+    test.case("the first match in document order")
+    let first = cssmatch.select(doc, htmltree.root(doc), compiled("li"))
+    test.assert(first != htmltree.NO_NODE)
+
+    test.case("a count, for a caller that wants the first few of very many")
+    test.assert(list.len(cssmatch.select_first(doc, htmltree.root(doc),
+                                               compiled("li"), 2)) == 2)
+    test.assert(list.len(cssmatch.select_first(doc, htmltree.root(doc),
+                                               compiled("li"), 0)) == 0)
+
+    test.case("and nothing matching answers no node rather than a wrong one")
+    test.assert(cssmatch.select(doc, htmltree.root(doc), compiled("table"))
+                == htmltree.NO_NODE)
+
+@test
+fn test_closest_walks_up_from_a_node_and_includes_it() [io]
+    // What a scraper does when it has found a piece of text and wants
+    // the row it sits in.
+    let doc = page()
+    let marked = cssmatch.select(doc, htmltree.root(doc), compiled(".on"))
+
+    test.case("the nearest ancestor that matches")
+    test.assert(cssmatch.closest(doc, marked, compiled("ul")) != htmltree.NO_NODE)
+
+    test.case("the node itself counts")
+    test.assert(cssmatch.closest(doc, marked, compiled("li")) == marked)
+
+    test.case("and nothing above it answers no node")
+    test.assert(cssmatch.closest(doc, marked, compiled("table")) == htmltree.NO_NODE)
+
+@test
+fn test_only_an_element_matches_and_root_is_the_document_element() [io]
+    let doc = page()
+
+    test.case("the document root is not an element, so it matches nothing")
+    test.assert(not cssmatch.matches(doc, htmltree.root(doc), compiled("*")))
+
+    test.case("and :root is the outermost element")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled(":root"))) == 1)
+
+    test.case("an id is compared case-sensitively, which is what HTML's id is")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("#main"))) == 1)
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("#MAIN"))) == 0)
+
+    test.case("and a tag name is not, because HTML's element names are not")
+    test.assert(list.len(cssmatch.select_all(doc, htmltree.root(doc),
+                                             compiled("MAIN"))) == 1)

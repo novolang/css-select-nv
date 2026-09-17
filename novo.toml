@@ -1,0 +1,49 @@
+[package]
+name        = "css-select-nv"
+version     = "0.0.1"
+description = "Selectors Level 3 in full, parsed once into a value a caller can read: the type, universal, id, class and attribute selectors, the four combinators, every structural pseudo-class including the an+b micro-syntax, and `:not()` — matched against html-nv's tree, with specificity computed and Level 4 named as left out."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  A selector is parsed from a string the caller holds and
+# matched against a tree the caller holds.  Nothing is fetched: a
+# document's stylesheet is never loaded, because a selector engine that
+# loaded one would be following links out of a document it was given.
+layer       = "core"
+
+category    = "web"
+
+tags        = ["css", "selectors", "css-selectors", "level-3", "scraping", "dom", "html", "web"]
+repository  = "https://github.com/novolang/css-select-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Selectors Level 3 in full, as a value, over html-nv's tree"
+
+[dependencies]
+# html-nv supplies the tree every selector here is matched against, and
+# taking its `HtmlDoc` rather than declaring a node type of this
+# package's own is the reason this package can exist at all: two
+# packages that each declared a `Node` could not be used by the same
+# program.
+#
+# html-nv's own `htmlquery` module already compiles a NAMED SUBSET of
+# CSS and refuses the rest by name.  This package is the rest.  The
+# five things htmlquery lists as refused — `:nth-child()` and its
+# family, `:not()`, the pseudo-elements, the state pseudo-classes and
+# namespaces — are each answered here: implemented, parsed and
+# reported, or named as unsupported with a reason.  The two are not
+# alternatives.  A caller that wants `div` or `.row` matched should use
+# htmlquery, which parses nothing; a caller that has a selector a user
+# or a stylesheet wrote uses this.
+html-nv = "^0.0.1"

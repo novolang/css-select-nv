@@ -1,0 +1,273 @@
+// cssmatch.nv — a parsed selector against html-nv's tree.
+//
+// MATCHING RUNS RIGHT TO LEFT
+//
+// A selector is written left to right and matched right to left.
+// `main > .row a` is answered by asking whether THIS node is an `a`,
+// then whether some ancestor is a `.row`, then whether that one's
+// parent is a `main`.  Written the other way round, answering it would
+// mean walking every descendant of every `main` in the document.
+//
+// That is why `matches` can answer for one node without the tree being
+// walked from the root, and it is why `select_all` is a walk with a
+// test at each node rather than a search that narrows.
+//
+// WHAT A TREE CANNOT ANSWER
+//
+// Two things a selector may name have no answer here, and both are
+// refused at PARSE time rather than matched as false — see
+// `csserror`.  A state pseudo-class such as `:hover` describes a live
+// document, and a pseudo-element such as `::before` describes
+// something a stylesheet creates.  A matcher that answered false for
+// either would be telling a caller that the document does not have
+// something, when the truth is that the question does not apply.
+//
+// HOW NAMES ARE COMPARED
+//
+// html-nv's parser lower-cases every tag and attribute name, because
+// HTML defines both as ASCII case-insensitive, so this package
+// lower-cases the ones in a selector and compares them directly.
+// Class names, id values and attribute VALUES are compared
+// case-sensitively, which is what HTML specifies for them.
+
+use cssparse
+use htmltree
+
+// Whether one node matches a selector.
+//
+// True when any of the selector's alternatives matches.  The node is
+// given by its index in the document, and matching walks upwards from
+// it, so a caller testing one node pays for that node's ancestors and
+// not for the document.
+//
+// A node that is not an element — text, a comment, the document root —
+// matches nothing, including `*`.
+//
+// ```novo
+// use cssmatch
+// use cssparse
+// use htmlparse
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<main><a class=\"row\">x</a></main>")
+//     match cssparse.parse("main > a.row")
+//         Err(fault)   => println(fault.message())
+//         Ok(selector) => println("${cssmatch.matches(doc, 2, selector)}")
+// ```
+pub fn matches(doc: htmltree.HtmlDoc, index: Int, selector: cssparse.CssSelector) -> Bool []
+    todo("css-select-nv.cssmatch.matches")
+
+// Whether one node matches one alternative.
+//
+// What `matches` runs for each alternative in turn, offered on its own
+// for a caller that has parsed with `cssparse.parse_one`.
+//
+// ```novo
+// use cssmatch
+// use cssparse
+// use htmlparse
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<main><a>x</a></main>")
+//     match cssparse.parse_one("main > a")
+//         Err(fault)  => println(fault.message())
+//         Ok(complex) => println("${cssmatch.matches_complex(doc, 2, complex)}")
+// ```
+pub fn matches_complex(doc: htmltree.HtmlDoc, index: Int, complex: cssparse.CssComplex) -> Bool []
+    todo("css-select-nv.cssmatch.matches_complex")
+
+// Whether one node satisfies one compound selector: every simple
+// selector in it and none of its negations.
+//
+// No combinator is involved, so this asks about the node alone.
+//
+// ```novo
+// use cssmatch
+// use cssparse
+// use htmlparse
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<a class=\"row\">x</a>")
+//     match cssparse.parse_one("a.row")
+//         Err(fault)  => println(fault.message())
+//         Ok(complex) => println("${cssmatch.matches_compound(doc, 1, complex.compounds[0])}")
+// ```
+pub fn matches_compound(doc: htmltree.HtmlDoc, index: Int,
+                        compound: cssparse.CssCompound) -> Bool []
+    todo("css-select-nv.cssmatch.matches_compound")
+
+// Whether one node satisfies one simple selector.
+//
+// The bottom of the matcher, and the function a caller writing its own
+// walk over this package's parsed values needs.
+//
+// ```novo
+// use cssmatch
+// use htmlparse
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<a class=\"row\">x</a>")
+//     println("${cssmatch.matches_simple(doc, 1, CssClass("row"))}")
+// ```
+pub fn matches_simple(doc: htmltree.HtmlDoc, index: Int, simple: cssparse.CssSimple) -> Bool []
+    todo("css-select-nv.cssmatch.matches_simple")
+
+// The first node under `from` that matches, in document order, or
+// `htmltree.NO_NODE`.
+//
+// `from` is included in the search, which is what a caller passing the
+// document root expects and what `querySelector` does from an element.
+//
+// ```novo
+// use cssmatch
+// use cssparse
+// use htmlparse
+// use htmltree
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<main><a>x</a></main>")
+//     match cssparse.parse("a")
+//         Err(fault)   => println(fault.message())
+//         Ok(selector) => println("${cssmatch.select(doc, htmltree.root(doc), selector)}")
+// ```
+pub fn select(doc: htmltree.HtmlDoc, from: Int, selector: cssparse.CssSelector) -> Int []
+    todo("css-select-nv.cssmatch.select")
+
+// Every node under `from` that matches, in document order.
+//
+// A node appears once however many of the selector's alternatives it
+// matches, which is what a caller counting results expects and what
+// `querySelectorAll` does.
+//
+// ```novo
+// use cssmatch
+// use cssparse
+// use htmlparse
+// use htmltree
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<ul><li>a</li><li>b</li></ul>")
+//     match cssparse.parse("li")
+//         Err(fault)   => println(fault.message())
+//         Ok(selector) =>
+//             println("${list.len(cssmatch.select_all(doc, htmltree.root(doc), selector))}")
+// ```
+pub fn select_all(doc: htmltree.HtmlDoc, from: Int, selector: cssparse.CssSelector) -> [Int] []
+    todo("css-select-nv.cssmatch.select_all")
+
+// The nearest node at or above `index` that matches, or
+// `htmltree.NO_NODE`.
+//
+// The node itself first, then its ancestors.  What a scraper does when
+// it has found a piece of text and wants the row, the card or the
+// article it sits in.
+//
+// ```novo
+// use cssmatch
+// use cssparse
+// use htmlparse
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<article><p>x</p></article>")
+//     match cssparse.parse("article")
+//         Err(fault)   => println(fault.message())
+//         Ok(selector) => println("${cssmatch.closest(doc, 2, selector)}")
+// ```
+pub fn closest(doc: htmltree.HtmlDoc, index: Int, selector: cssparse.CssSelector) -> Int []
+    todo("css-select-nv.cssmatch.closest")
+
+// The first `count` nodes under `from` that match, in document order.
+//
+// A scraper that wants the first ten rows of a table with fifty
+// thousand of them stops after ten instead of building a list of them
+// all.  `count` of zero or less answers an empty list.
+//
+// ```novo
+// use cssmatch
+// use cssparse
+// use htmlparse
+// use htmltree
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<ul><li>a</li><li>b</li></ul>")
+//     match cssparse.parse("li")
+//         Err(fault)   => println(fault.message())
+//         Ok(selector) =>
+//             println("${list.len(cssmatch.select_first(doc, htmltree.root(doc), selector, 1))}")
+// ```
+pub fn select_first(doc: htmltree.HtmlDoc, from: Int, selector: cssparse.CssSelector,
+                    count: Int) -> [Int] []
+    todo("css-select-nv.cssmatch.select_first")
+
+// Which alternative of a selector matched a node, as its index in
+// `alternatives`, or `-1`.
+//
+// A tool explaining why a rule applied needs to know which half of
+// `h1, .title` did it, because the two have different specificities
+// and therefore different consequences in the cascade.
+//
+// ```novo
+// use cssmatch
+// use cssparse
+// use htmlparse
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<h1>x</h1>")
+//     match cssparse.parse("p, h1")
+//         Err(fault)   => println(fault.message())
+//         Ok(selector) => println("${cssmatch.matching_alternative(doc, 1, selector)}")
+// ```
+pub fn matching_alternative(doc: htmltree.HtmlDoc, index: Int,
+                            selector: cssparse.CssSelector) -> Int []
+    todo("css-select-nv.cssmatch.matching_alternative")
+
+// A node's position among its element siblings, counting from one.
+//
+// What `:nth-child()` is answered from.  Public because it is the one
+// number every structural pseudo-class is about, and a caller writing
+// its own filter over this package's values needs the same count.
+// Non-element siblings — text, comments — are not counted, which is
+// what Level 3 section 6.6.5 specifies.
+//
+// ```novo
+// use cssmatch
+// use htmlparse
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<ul><li>a</li><li>b</li></ul>")
+//     println("${cssmatch.child_position(doc, 2)}")
+// ```
+pub fn child_position(doc: htmltree.HtmlDoc, index: Int) -> Int []
+    todo("css-select-nv.cssmatch.child_position")
+
+// A node's position among the element siblings with the same tag,
+// counting from one.
+//
+// What `:nth-of-type()` is answered from.
+//
+// ```novo
+// use cssmatch
+// use htmlparse
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<div><p>a</p><span>b</span><p>c</p></div>")
+//     println("${cssmatch.type_position(doc, 4)}")
+// ```
+pub fn type_position(doc: htmltree.HtmlDoc, index: Int) -> Int []
+    todo("css-select-nv.cssmatch.type_position")
+
+// How many element siblings a node has, including itself.
+//
+// The other half of what `:nth-last-child()` and `:only-child` are
+// answered from.
+//
+// ```novo
+// use cssmatch
+// use htmlparse
+//
+// fn main() [io]
+//     let doc = htmlparse.parse("<ul><li>a</li><li>b</li></ul>")
+//     println("${cssmatch.sibling_count(doc, 2)}")
+// ```
+pub fn sibling_count(doc: htmltree.HtmlDoc, index: Int) -> Int []
+    todo("css-select-nv.cssmatch.sibling_count")

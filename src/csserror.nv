@@ -1,0 +1,239 @@
+// csserror.nv — why a selector would not compile, and the catalogue of
+// what is deliberately not here.
+//
+// A REFUSAL IS BETTER THAN A SELECTOR THAT MATCHES NOTHING
+//
+// Every selector engine has to decide what to do with a selector it
+// does not implement.  Matching nothing is the worst answer available:
+// the caller sees an empty result and goes looking at their document,
+// which is correct, and never finds the problem, which is in their
+// selector.
+//
+// So everything this package does not implement is refused BY NAME,
+// and the name comes with a reason and with what to do instead.
+// `CssUnsupported` is that catalogue, and it is public because a tool
+// that lints selectors — a template checker, an editor — wants to say
+// the same things without parsing anything twice.
+//
+// THE THREE REASONS SOMETHING IS NOT HERE
+//
+//   a later level   `:is()`, `:where()`, `:has()` and the rest are
+//                   Selectors Level 4.  They are not refused because
+//                   they are hard; they are refused because this
+//                   package is Level 3 and a package that implemented
+//                   half of a later level would be a package nobody
+//                   could describe.
+//   not in a tree   `:hover`, `:focus`, `:checked` and their family
+//                   describe the STATE of a live document.  A parsed
+//                   tree has no state, so these have no answer rather
+//                   than a false one.
+//   not an element  `::before`, `::after` and the other pseudo-elements
+//                   describe things a stylesheet creates and a document
+//                   does not contain.  There is no node to match.
+
+// Something a selector may name that this package does not implement.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     println(csserror.unsupported_name(CssLevel4Logical))
+// ```
+pub enum CssUnsupported
+    // `:is()`, `:where()`, `:has()`, and a `:not()` holding anything
+    // more than one simple selector.  Selectors Level 4.
+    CssLevel4Logical
+    // `:nth-child(An+B of S)`, the Level 4 form that filters by a
+    // selector before counting.
+    CssLevel4NthOf
+    // The case-sensitivity flags on an attribute selector,
+    // `[attr=value i]` and `[attr=value s]`.  Selectors Level 4.
+    CssLevel4AttrFlags
+    // `:dir()`, `:lang()` beyond the Level 3 form, `:any-link`, and
+    // the other Level 4 additions to the linguistic and link
+    // pseudo-classes.
+    CssLevel4Linguistic
+    // `:hover`, `:focus`, `:active`, `:checked`, `:disabled`,
+    // `:enabled`, `:target`, `:visited` and their family.  They
+    // describe the state of a live document, and a parsed tree has
+    // none.
+    CssStatePseudoClass
+    // `::before`, `::after`, `::first-line`, `::first-letter` and the
+    // rest.  A pseudo-element is not a node in the document, so there
+    // is nothing for a matcher to answer about.  The parser RECOGNISES
+    // one and reports it as this rather than as a syntax error,
+    // because a selector carrying one is a valid selector that this
+    // package cannot match.
+    CssPseudoElement
+    // A namespace prefix, `svg|rect`.  Level 3 section 6.1 defines
+    // them against a namespace declaration a stylesheet carries, and
+    // html-nv's tree records no namespace for a node, so there is
+    // nothing to compare a prefix against.
+    CssNamespacePrefix
+
+// The name a message uses: `":is(), :where(), :has()"` and the rest.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     println(csserror.unsupported_name(CssPseudoElement))
+// ```
+pub fn unsupported_name(u: CssUnsupported) -> Str []
+    todo("css-select-nv.csserror.unsupported_name")
+
+// Why it is not here, in one sentence.
+//
+// One of the three reasons at the top of this module, said about this
+// entry.  A tool that refuses a selector shows this, because "not
+// supported" sends a caller to look for a version that supports it and
+// two of the three reasons mean no version will.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     println(csserror.unsupported_reason(CssStatePseudoClass))
+// ```
+pub fn unsupported_reason(u: CssUnsupported) -> Str []
+    todo("css-select-nv.csserror.unsupported_reason")
+
+// A short stable code for a log or a metric label: `"level4_logical"`,
+// `"pseudo_element"`, and the rest.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     println(csserror.unsupported_code(CssNamespacePrefix))
+// ```
+pub fn unsupported_code(u: CssUnsupported) -> Str []
+    todo("css-select-nv.csserror.unsupported_code")
+
+// Which entry a pseudo-class or pseudo-element name falls under, or
+// `None` when the name is one this package implements.
+//
+// `"hover"` is `CssStatePseudoClass`; `"first-child"` is `None`,
+// because it is implemented.  A name nobody has ever defined is also
+// `None`, and reaches the parser as `CssUnknownPseudo` instead — the
+// difference between "this exists and is not here" and "this is a
+// typo" is the difference between a user going to read a
+// specification and a user looking at their own selector again.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     match csserror.unsupported_for("hover")
+//         Some(entry) => println(csserror.unsupported_name(entry))
+//         None        => println("implemented, or not a name at all")
+// ```
+pub fn unsupported_for(name: Str) -> ?CssUnsupported []
+    todo("css-select-nv.csserror.unsupported_for")
+
+// Why a selector would not compile.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     println(CssEmptySelector(0).message())
+// ```
+pub enum CssFault
+    // A character that cannot appear here.  `at` is its byte offset in
+    // the selector and `ch` is the character.
+    CssUnexpected(at: Int, ch: Int)
+    // A `[` with no `]`, a `(` with no `)`, or a quote with no close.
+    // `at` is the offset of the opener.
+    CssUnclosed(at: Int, opener: Int)
+    // Nothing at all, or a group with an empty member: `"a,,b"`.  `at`
+    // is where the empty member was expected.
+    CssEmptySelector(at: Int)
+    // An attribute operator that is not one of the seven Level 3
+    // defines.  `op` is what was written.
+    CssBadOperator(at: Int, op: Str)
+    // A pseudo-class or pseudo-element that is defined somewhere and
+    // is not implemented here.  `name` is as it was written, without
+    // the colons, and `entry` says which of the three reasons applies.
+    CssNotImplemented(at: Int, name: Str, entry: CssUnsupported)
+    // A pseudo-class nobody has defined: a typo.  `name` is as it was
+    // written.
+    CssUnknownPseudo(at: Int, name: Str)
+    // The body of an `:nth-*()` is not the an+b micro-syntax of
+    // Level 3 section 6.6.5.  `text` is what was inside the
+    // parentheses.
+    CssBadNth(at: Int, text: Str)
+    // A `:not()` holding something other than exactly one simple
+    // selector.  Level 3 section 6.6.7 admits one and only one, and
+    // anything else is Level 4.
+    CssBadNegation(at: Int)
+    // A combinator with nothing on one side of it: `"> p"`, `"a >"`.
+    CssDanglingCombinator(at: Int)
+
+// `CssFault` is an `Error`, which is what lets `Result<T, CssFault>`
+// exist at all (SPEC section 3.4).
+impl Error for CssFault
+    // The one-line message, naming what was written and where.
+    //
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("css-select-nv.CssFault.message")
+
+// The byte offset in the selector the fault is about.
+//
+// Every arm has one, so a caller pointing a caret at a selector never
+// has to ask whether this fault has a position.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     println("${csserror.offset(CssEmptySelector(3))}")
+// ```
+pub fn offset(f: CssFault) -> Int []
+    todo("css-select-nv.csserror.offset")
+
+// A short stable code for a log or a metric label: `"unexpected"`,
+// `"not_implemented"`, `"bad_nth"`, and the rest.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     println(csserror.code(CssBadNth(6, "2n+")))
+// ```
+pub fn code(f: CssFault) -> Str []
+    todo("css-select-nv.csserror.code")
+
+// Whether the selector is valid CSS that this package does not
+// implement, rather than something that is not a selector at all.
+//
+// True for `CssNotImplemented` only.  The distinction matters to the
+// caller: a syntax error is theirs to fix, and an unimplemented
+// selector is this package's limit, and telling a user to check their
+// selector when the selector is correct is the worst message a tool
+// can produce.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     println("${csserror.is_unimplemented(CssUnknownPseudo(1, "hovr"))}")
+// ```
+pub fn is_unimplemented(f: CssFault) -> Bool []
+    todo("css-select-nv.csserror.is_unimplemented")
+
+// A caret line for a diagnostic: the selector, a newline, and spaces
+// up to the fault's offset followed by a `^`.
+//
+// The two-line message every tool that reports a bad selector builds,
+// so that no two of them build it differently.
+//
+// ```novo
+// use csserror
+//
+// fn main() [io]
+//     println(csserror.caret("a >", CssDanglingCombinator(2)))
+// ```
+pub fn caret(selector: Str, f: CssFault) -> Str []
+    todo("css-select-nv.csserror.caret")

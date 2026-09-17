@@ -1,0 +1,419 @@
+// cssparse.nv — the grammar of Selectors Level 3, parsed into values a
+// caller can read.
+//
+// THE PARSED SELECTOR IS NOT OPAQUE, AND THAT IS THE POINT
+//
+// A compiled selector that a caller cannot look inside can be matched
+// and nothing else.  That is the right shape when matching is all
+// anybody wants, and html-nv's `htmlquery` already provides it for the
+// subset it implements.
+//
+// This package is for the other callers: the linter that wants to say
+// a selector is over-specific, the template checker that wants every
+// class name a stylesheet mentions, the tool that rewrites `.btn` to a
+// hashed name, the editor that highlights a selector's parts, and
+// anything that needs specificity.  None of those can be written
+// against an opaque value, so the tree below is public: a selector is
+// a list of alternatives, an alternative is compounds joined by
+// combinators, and a compound is a set of simple selectors.
+//
+// WHY `:not()` IS A FIELD AND NOT A CASE
+//
+// Level 3 section 6.6.7 admits exactly one simple selector inside
+// `:not()`, and forbids nesting one inside another.  So a compound
+// selector is completely described by two lists — the simple selectors
+// that must match and the ones that must not — and nothing here is
+// recursive.  `:not(:not(p))` and `:not(a.b)` are both Level 4 and are
+// refused by name.
+//
+// WHAT A COMPOUND IS
+//
+// Level 3 calls `a.b[href]` a sequence of simple selectors and calls
+// `div > a.b` a selector.  The names here follow the Selectors Level 4
+// vocabulary, which renamed the first a COMPOUND selector and the
+// second a COMPLEX one, because those names are what every other tool
+// now uses and a reader looking either of them up will find the same
+// thing.  The grammar being parsed is Level 3's.
+
+use csserror
+
+// How two compound selectors are related.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     println(cssparse.combinator_text(CssChild))
+// ```
+pub enum CssCombinator
+    // A blank: the right side is a descendant of the left, at any
+    // depth.
+    CssDescendant
+    // `>`: the right side is a child of the left.
+    CssChild
+    // `+`: the right side is the next element sibling of the left.
+    CssAdjacent
+    // `~`: the right side is a later element sibling of the left.
+    CssSibling
+
+// How an attribute selector compares.
+//
+// The seven Level 3 section 6.3 defines, and no others.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     println(cssparse.operator_text(CssPrefix))
+// ```
+pub enum CssAttrOp
+    // `[attr]`: the attribute is present, whatever its value.
+    CssExists
+    // `[attr=v]`: the value is exactly `v`.
+    CssEquals
+    // `[attr~=v]`: the value is a whitespace-separated list holding
+    // `v`.  An empty `v`, or one containing whitespace, matches
+    // nothing.
+    CssIncludes
+    // `[attr|=v]`: the value is `v`, or begins with `v` followed by a
+    // hyphen.  Written for language subtags: `[lang|=en]` matches
+    // `en-GB`.
+    CssDashMatch
+    // `[attr^=v]`: the value begins with `v`.  An empty `v` matches
+    // nothing.
+    CssPrefix
+    // `[attr$=v]`: the value ends with `v`.  An empty `v` matches
+    // nothing.
+    CssSuffix
+    // `[attr*=v]`: the value holds `v` anywhere.  An empty `v` matches
+    // nothing.
+    CssSubstring
+
+// A structural pseudo-class, from Level 3 section 6.6.5.
+//
+// Every one of these is a question about a node's position among its
+// siblings, which is why they are the only pseudo-classes a static
+// tree can answer.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     println(cssparse.pseudo_text(CssFirstChild))
+// ```
+pub enum CssPseudoKind
+    // `:root`: the element with no element parent.
+    CssRoot
+    // `:empty`: no child nodes at all, not even text.  A comment does
+    // not count as content and whitespace does.
+    CssEmpty
+    // `:first-child`.
+    CssFirstChild
+    // `:last-child`.
+    CssLastChild
+    // `:only-child`.
+    CssOnlyChild
+    // `:first-of-type`: first among its siblings with the same tag.
+    CssFirstOfType
+    // `:last-of-type`.
+    CssLastOfType
+    // `:only-of-type`.
+    CssOnlyOfType
+    // `:nth-child(an+b)`.  `step` is `a` and `offset` is `b`, already
+    // parsed out of the micro-syntax, so `odd` arrives as `2` and `1`.
+    CssNthChild(step: Int, offset: Int)
+    // `:nth-last-child(an+b)`, counted from the end.
+    CssNthLastChild(step: Int, offset: Int)
+    // `:nth-of-type(an+b)`, counting only siblings with the same tag.
+    CssNthOfType(step: Int, offset: Int)
+    // `:nth-last-of-type(an+b)`.
+    CssNthLastOfType(step: Int, offset: Int)
+
+// One simple selector: one condition on one element.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     println(cssparse.simple_text(CssClass("row")))
+// ```
+pub enum CssSimple
+    // `*`.
+    CssUniversal
+    // A type selector.  `name` is the tag, lower-cased, because
+    // html-nv's tree lower-cases every tag name and HTML defines its
+    // element names as ASCII case-insensitive.  `namespace` is `""`
+    // for none, `"*"` for any, or the prefix as written — a prefix
+    // other than those two makes the whole selector
+    // `CssNamespacePrefix`, because there is nothing in the tree to
+    // compare it against.
+    CssType(name: Str, namespace: Str)
+    // `#id`.  Compared case-sensitively, which is what HTML's `id`
+    // attribute is.
+    CssId(name: Str)
+    // `.class`.  Matched against the whitespace-separated words of the
+    // `class` attribute.
+    CssClass(name: Str)
+    // `[attr]` and its six operator forms.  `name` is lower-cased for
+    // the same reason a tag is; `value` is the comparison value with
+    // its quotes removed, or `""` for `CssExists`.
+    CssAttr(name: Str, op: CssAttrOp, value: Str)
+    // `:first-child` and the rest of the structural pseudo-classes.
+    CssPseudoClass(kind: CssPseudoKind)
+
+// A run of simple selectors that all apply to one element: `a.b[href]`.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse("a.row")
+//         Ok(selector) => println("${list.len(selector.alternatives)}")
+//         Err(fault)   => println(fault.message())
+// ```
+pub struct CssCompound
+    // The simple selectors that must all match.  Never empty: a
+    // compound with nothing written in it holds `CssUniversal`, so
+    // `"> p"` and `"* > p"` parse to the same shape.
+    simples: [CssSimple]
+    // The simple selectors inside `:not()`, none of which may match.
+    // Level 3 admits one simple selector per `:not()` and a compound
+    // may carry several `:not()`s, so this is a list.
+    negations: [CssSimple]
+
+// Compounds joined by combinators: `div > a.row`.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse("div > a")
+//         Ok(selector) => println("${list.len(selector.alternatives[0].compounds)}")
+//         Err(fault)   => println(fault.message())
+// ```
+pub struct CssComplex
+    // The compounds, leftmost first.  Never empty.
+    compounds: [CssCompound]
+    // The combinators between them, so this list is always one shorter
+    // than `compounds`.  `combinators[0]` joins `compounds[0]` to
+    // `compounds[1]`.
+    combinators: [CssCombinator]
+
+// A whole selector, which is a comma-separated list of alternatives.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse("h1, h2")
+//         Ok(selector) => println("${list.len(selector.alternatives)}")
+//         Err(fault)   => println(fault.message())
+// ```
+pub struct CssSelector
+    // The selector as it was written, kept so a diagnostic and a
+    // caller printing what it compiled both have it.
+    source: Str
+    // The alternatives, in the order they were written.  Never empty:
+    // an empty selector is `CssEmptySelector` rather than a selector
+    // with no alternatives.
+    alternatives: [CssComplex]
+
+// A selector, parsed.
+//
+// The whole grammar of Level 3 section 5, and the refusals of
+// `csserror` for everything outside it.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse("main > .row a[href^=\"/\"]:not(.external)")
+//         Ok(selector) => println(selector.source)
+//         Err(fault)   => println(fault.message())
+// ```
+pub fn parse(selector: Str) -> Result<CssSelector, csserror.CssFault> []
+    todo("css-select-nv.cssparse.parse")
+
+// One alternative, parsed.
+//
+// For a caller that has a single complex selector and wants to refuse
+// a comma rather than silently accept a list — a CSS rule's own
+// selector list is parsed with `parse`, and a `closest` call is not.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse_one("div > a")
+//         Ok(complex) => println("${list.len(complex.compounds)}")
+//         Err(fault)  => println(fault.message())
+// ```
+pub fn parse_one(selector: Str) -> Result<CssComplex, csserror.CssFault> []
+    todo("css-select-nv.cssparse.parse_one")
+
+// Whether a string is a selector this package can compile.
+//
+// The cheap question, for a caller filtering a list rather than
+// reporting on one.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     println("${cssparse.is_valid("a.row")}")
+//     println("${cssparse.is_valid("a >")}")
+// ```
+pub fn is_valid(selector: Str) -> Bool []
+    todo("css-select-nv.cssparse.is_valid")
+
+// An `an+b` body, parsed into its two numbers.
+//
+// The micro-syntax of Level 3 section 6.6.5, which is its own little
+// grammar: `odd` is `2n+1`, `even` is `2n`, `3` is `0n+3`, `n` is
+// `1n+0`, `-n+3` is `-1n+3`, and whitespace is allowed around the sign
+// but not inside a number.
+//
+// Public because it is the part of CSS most often reimplemented
+// wrongly, and a caller writing its own matcher over this package's
+// values needs the same parse.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse_nth("odd")
+//         Ok(nth)    => println("${nth.step}n+${nth.offset}")
+//         Err(fault) => println(fault.message())
+// ```
+pub fn parse_nth(body: Str) -> Result<CssNth, csserror.CssFault> []
+    todo("css-select-nv.cssparse.parse_nth")
+
+// The two numbers of an `an+b` expression.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse_nth("2n+1")
+//         Ok(nth)    => println("${nth.step}")
+//         Err(fault) => println(fault.message())
+// ```
+pub struct CssNth
+    // `a`: how far apart the matching positions are.  `0` means only
+    // one position matches.
+    step: Int
+    // `b`: the position the series starts from, counting from one.
+    offset: Int
+
+// Whether a position matches an `an+b` series.
+//
+// True when there is an integer `n` of zero or more with
+// `position == step * n + offset`.  Positions count from one, which is
+// CSS's convention and not most languages'.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse_nth("2n+1")
+//         Ok(nth)    => println("${cssparse.nth_matches(nth, 3)}")
+//         Err(fault) => println(fault.message())
+// ```
+pub fn nth_matches(nth: CssNth, position: Int) -> Bool []
+    todo("css-select-nv.cssparse.nth_matches")
+
+// A selector printed back from its parsed form.
+//
+// Not the source: this is the canonical spelling, with one space
+// around each combinator, `*` written where it was implied, and
+// attribute values quoted.  A tool that rewrites a selector prints the
+// result with this, and two selectors that mean the same thing print
+// the same.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse("div>a")
+//         Ok(selector) => println(cssparse.selector_text(selector))
+//         Err(fault)   => println(fault.message())
+// ```
+pub fn selector_text(selector: CssSelector) -> Str []
+    todo("css-select-nv.cssparse.selector_text")
+
+// One simple selector printed back.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     println(cssparse.simple_text(CssId("main")))
+// ```
+pub fn simple_text(simple: CssSimple) -> Str []
+    todo("css-select-nv.cssparse.simple_text")
+
+// A combinator printed back: `" "`, `" > "`, `" + "`, `" ~ "`.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     println(cssparse.combinator_text(CssSibling))
+// ```
+pub fn combinator_text(c: CssCombinator) -> Str []
+    todo("css-select-nv.cssparse.combinator_text")
+
+// An attribute operator printed back: `"="`, `"~="`, `"^="`, and the
+// rest.  `CssExists` is `""`.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     println(cssparse.operator_text(CssDashMatch))
+// ```
+pub fn operator_text(op: CssAttrOp) -> Str []
+    todo("css-select-nv.cssparse.operator_text")
+
+// A structural pseudo-class printed back: `":first-child"`,
+// `":nth-child(2n+1)"`.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     println(cssparse.pseudo_text(CssNthChild(2, 1)))
+// ```
+pub fn pseudo_text(kind: CssPseudoKind) -> Str []
+    todo("css-select-nv.cssparse.pseudo_text")
+
+// Every class name a selector mentions, in the order they appear,
+// duplicates included.
+//
+// What a template checker and a class-renaming tool both start from,
+// and the first thing a reader of this package's public tree would
+// have written themselves.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse(".row .cell")
+//         Ok(selector) => println("${list.len(cssparse.class_names(selector))}")
+//         Err(fault)   => println(fault.message())
+// ```
+pub fn class_names(selector: CssSelector) -> [Str] []
+    todo("css-select-nv.cssparse.class_names")
+
+// Every tag name a selector mentions, in the order they appear.
+//
+// ```novo
+// use cssparse
+//
+// fn main() [io]
+//     match cssparse.parse("div > a")
+//         Ok(selector) => println("${list.len(cssparse.type_names(selector))}")
+//         Err(fault)   => println(fault.message())
+// ```
+pub fn type_names(selector: CssSelector) -> [Str] []
+    todo("css-select-nv.cssparse.type_names")

@@ -1,0 +1,163 @@
+// cssspec.nv — specificity, which is the number that decides which
+// rule wins.
+//
+// WHY A SELECTOR ENGINE SHIPS IT
+//
+// Matching answers whether a rule applies.  Specificity answers which
+// of two rules that both apply decides the value, and a tool that
+// works with stylesheets needs the second at least as often as the
+// first: a linter reporting an override that will not take effect, a
+// bundler merging rules, an editor explaining why a colour is not the
+// one somebody wrote.
+//
+// Level 3 section 9 defines it as three counts, compared from the left:
+//
+//   a   id selectors
+//   b   class selectors, attribute selectors and pseudo-classes
+//   c   type selectors and pseudo-elements
+//
+// The universal selector counts nothing.  The simple selector inside
+// `:not()` counts as though it were written outside it, and the
+// `:not()` itself counts nothing — a rule people get wrong in both
+// directions, and the reason `negations` is a field rather than
+// something folded into the parse.
+//
+// A selector list has no specificity of its own: each alternative has
+// one, and the one that matched is the one that counts.  So
+// `specificity_of` takes a `CssComplex` and the selector-level call
+// answers the largest, which is what a caller ranking a whole rule
+// wants and is what the cascade would use if every alternative
+// matched.
+
+use cssparse
+
+// The three counts of Level 3 section 9.
+//
+// ```novo
+// use cssspec
+//
+// fn main() [io]
+//     println(cssspec.specificity_text(cssspec.zero()))
+// ```
+pub struct CssSpecificity
+    // Id selectors.
+    ids: Int
+    // Class selectors, attribute selectors and pseudo-classes.
+    classes: Int
+    // Type selectors and pseudo-elements.
+    types: Int
+
+// The specificity of nothing: three zeros.
+//
+// The value a caller folds a list into, and what the universal
+// selector alone answers.
+//
+// ```novo
+// use cssspec
+//
+// fn main() [io]
+//     println("${cssspec.zero().ids}")
+// ```
+pub fn zero() -> CssSpecificity []
+    todo("css-select-nv.cssspec.zero")
+
+// The specificity of one alternative.
+//
+// ```novo
+// use cssparse
+// use cssspec
+//
+// fn main() [io]
+//     match cssparse.parse_one("#main .row a")
+//         Ok(complex) => println(cssspec.specificity_text(cssspec.of_complex(complex)))
+//         Err(fault)  => println(fault.message())
+// ```
+pub fn of_complex(complex: cssparse.CssComplex) -> CssSpecificity []
+    todo("css-select-nv.cssspec.of_complex")
+
+// The specificity of one compound selector.
+//
+// The building block, offered on its own because a caller walking the
+// parsed tree itself — a linter reporting the most specific part of a
+// selector — wants it per compound.
+//
+// ```novo
+// use cssparse
+// use cssspec
+//
+// fn main() [io]
+//     match cssparse.parse_one("a.row")
+//         Ok(complex) => println("${cssspec.of_compound(complex.compounds[0]).classes}")
+//         Err(fault)  => println(fault.message())
+// ```
+pub fn of_compound(compound: cssparse.CssCompound) -> CssSpecificity []
+    todo("css-select-nv.cssspec.of_compound")
+
+// The highest specificity among a selector's alternatives.
+//
+// A selector list has none of its own — the alternative that matched
+// is the one the cascade uses — so this is the answer for a caller
+// ranking a whole rule without knowing which alternative matched.
+//
+// ```novo
+// use cssparse
+// use cssspec
+//
+// fn main() [io]
+//     match cssparse.parse("a, #main")
+//         Ok(selector) => println(cssspec.specificity_text(cssspec.of_selector(selector)))
+//         Err(fault)   => println(fault.message())
+// ```
+pub fn of_selector(selector: cssparse.CssSelector) -> CssSpecificity []
+    todo("css-select-nv.cssspec.of_selector")
+
+// Which of two specificities wins: `-1`, `0` or `1`.
+//
+// Compared from the left, as section 9 says: any number of class
+// selectors never outweighs one id selector.  `0` means a tie, and a
+// tie is decided by document order, which is not this package's
+// business.
+//
+// ```novo
+// use cssspec
+//
+// fn main() [io]
+//     println("${cssspec.compare(cssspec.zero(), cssspec.zero())}")
+// ```
+pub fn compare(a: CssSpecificity, b: CssSpecificity) -> Int []
+    todo("css-select-nv.cssspec.compare")
+
+// The three counts as `"a,b,c"`: `"1,2,0"`.
+//
+// The spelling every browser's developer tools use, so a message
+// carrying it is a message a reader already knows how to read.
+//
+// ```novo
+// use cssspec
+//
+// fn main() [io]
+//     println(cssspec.specificity_text(cssspec.zero()))
+// ```
+pub fn specificity_text(s: CssSpecificity) -> Str []
+    todo("css-select-nv.cssspec.specificity_text")
+
+// Whether a selector reaches further than it needs to, by a threshold
+// a caller sets.
+//
+// True when the id count is above `max_ids` or the class count is
+// above `max_classes`.  It is here because every stylesheet linter
+// implements the same rule, and because a package that publishes
+// specificity and leaves the comparison to callers has published half
+// of it.
+//
+// ```novo
+// use cssparse
+// use cssspec
+//
+// fn main() [io]
+//     match cssparse.parse("#main #side .row")
+//         Ok(selector) => println("${cssspec.is_over(selector, 1, 3)}")
+//         Err(fault)   => println(fault.message())
+// ```
+pub fn is_over(selector: cssparse.CssSelector, max_ids: Int, max_classes: Int) -> Bool []
+    todo("css-select-nv.cssspec.is_over")

@@ -1,0 +1,112 @@
+// cssspec_tests.nv — the number that decides which rule wins.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// css-select-nv.cssspec.<fn>`.  What is asserted is the counting rule
+// of Level 3 section 9, including the two halves of it people get
+// wrong: the universal selector counts nothing, and a `:not()` counts
+// its contents but not itself.
+
+use std.test
+use cssparse
+use cssspec
+
+fn spec_of(text: Str) -> cssspec.CssSpecificity
+    match cssparse.parse_one(text)
+        Ok(complex) => cssspec.of_complex(complex)
+        Err(_)      => cssspec.zero()
+
+@test
+fn test_the_three_counts_are_the_three_the_specification_names() [io]
+    test.case("an id, a class and a type, one each")
+    let s = spec_of("#main .row a")
+    test.assert(s.ids == 1)
+    test.assert(s.classes == 1)
+    test.assert(s.types == 1)
+
+    test.case("an attribute selector and a pseudo-class count as classes")
+    let b = spec_of("a[href]:first-child")
+    test.assert(b.classes == 2)
+    test.assert(b.types == 1)
+    test.assert(b.ids == 0)
+
+    test.case("and nothing at all is three zeros")
+    test.assert(cssspec.zero().ids == 0)
+    test.assert(cssspec.zero().classes == 0)
+    test.assert(cssspec.zero().types == 0)
+
+@test
+fn test_the_universal_selector_counts_nothing() [io]
+    // Which is why an implied `*` can be written into the parsed value
+    // without changing any answer.
+    test.case("a universal selector on its own")
+    let s = spec_of("*")
+    test.assert(s.ids == 0)
+    test.assert(s.classes == 0)
+    test.assert(s.types == 0)
+
+    test.case("and one written beside something that does count")
+    test.assert(spec_of("* > p").types == 1)
+    test.assert(spec_of("p").types == 1)
+
+@test
+fn test_a_negation_counts_its_contents_and_not_itself() [io]
+    // Section 9, and the rule people get wrong in both directions.
+    // It is why `negations` is a field rather than something folded
+    // into the parse.
+    test.case("the simple selector inside counts as though it were outside")
+    let s = spec_of("a:not(.external)")
+    test.assert(s.types == 1)
+    test.assert(s.classes == 1)
+
+    test.case("and the :not() itself adds nothing")
+    test.assert(spec_of("a:not(.external)").classes == spec_of("a.external").classes)
+
+@test
+fn test_specificity_is_compared_from_the_left() [io]
+    // Any number of class selectors never outweighs one id selector,
+    // which is the fact every stylesheet argument is really about.
+    test.case("one id beats three classes")
+    test.assert(cssspec.compare(spec_of("#main"), spec_of(".a.b.c")) == 1)
+    test.assert(cssspec.compare(spec_of(".a.b.c"), spec_of("#main")) == 0 - 1)
+
+    test.case("one class beats any number of types")
+    test.assert(cssspec.compare(spec_of(".row"), spec_of("div span a")) == 1)
+
+    test.case("and equal counts are a tie, which document order decides elsewhere")
+    test.assert(cssspec.compare(spec_of(".row"), spec_of(".on")) == 0)
+
+@test
+fn test_a_selector_list_has_the_specificity_of_its_strongest_alternative() [io]
+    // The alternative that matched is the one the cascade uses, so a
+    // caller ranking a whole rule takes the largest.
+    match cssparse.parse("a, #main")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.case("the id alternative decides")
+            test.assert(cssspec.of_selector(selector).ids == 1)
+
+            test.case("and a rule can be checked against a threshold")
+            test.assert(not cssspec.is_over(selector, 1, 3))
+
+    match cssparse.parse("#main #side .row")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.case("two ids is over a threshold of one")
+            test.assert(cssspec.is_over(selector, 1, 3))
+
+@test
+fn test_one_compound_can_be_weighed_on_its_own() [io]
+    // A linter reporting the most specific PART of a selector needs
+    // this, not the whole.
+    match cssparse.parse_one("#main .row")
+        Err(fault)  => test.fail(fault.message())
+        Ok(complex) =>
+            test.case("the first compound carries the id")
+            test.assert(cssspec.of_compound(complex.compounds[0]).ids == 1)
+            test.assert(cssspec.of_compound(complex.compounds[1]).classes == 1)
+
+@test
+fn test_the_counts_print_the_way_a_browser_prints_them() [io]
+    test.case("a,b,c, so a message is one a reader already knows how to read")
+    test.assert(cssspec.specificity_text(cssspec.zero()) == "0,0,0")
+    test.assert(cssspec.specificity_text(spec_of("#main .row a")) == "1,1,1")

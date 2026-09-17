@@ -1,0 +1,118 @@
+// csserror_tests.nv — the catalogue of what is not here, and why
+// refusing beats matching nothing.
+//
+// RED ON PURPOSE: every assertion reaches `not implemented:
+// css-select-nv.csserror.<fn>`.  What is asserted is that a valid
+// selector this package does not implement is told apart from a typo,
+// and that each entry in the catalogue carries a reason rather than
+// only a name.
+
+use std.test
+use csserror
+use cssparse
+
+@test
+fn test_a_valid_selector_that_is_not_here_is_not_a_syntax_error() [io]
+    // Telling a user to check their selector when the selector is
+    // correct is the worst message a tool can produce.
+    test.case("a Level 4 pseudo-class")
+    match cssparse.parse("a:has(> img)")
+        Ok(_)      => test.fail(":has() is Level 4")
+        Err(fault) =>
+            test.assert(csserror.is_unimplemented(fault))
+            test.assert(csserror.code(fault) == "not_implemented")
+
+    test.case("a state pseudo-class")
+    match cssparse.parse("a:hover")
+        Ok(_)      => test.fail("a tree has no state")
+        Err(fault) => test.assert(csserror.is_unimplemented(fault))
+
+    test.case("a pseudo-element")
+    match cssparse.parse("p::before")
+        Ok(_)      => test.fail("a pseudo-element is not a node")
+        Err(fault) => test.assert(csserror.is_unimplemented(fault))
+
+    test.case("and a namespace prefix")
+    match cssparse.parse("svg|rect")
+        Ok(_)      => test.fail("the tree records no namespace")
+        Err(fault) => test.assert(csserror.is_unimplemented(fault))
+
+    test.case("but a name nobody ever defined is a typo, and says so")
+    match cssparse.parse("a:hovr")
+        Ok(_)      => test.fail("that is not a pseudo-class")
+        Err(fault) =>
+            test.assert(not csserror.is_unimplemented(fault))
+            test.assert(csserror.code(fault) == "unknown_pseudo")
+
+@test
+fn test_the_catalogue_says_which_entry_a_name_falls_under() [io]
+    test.case("the Level 4 logical pseudo-classes")
+    match csserror.unsupported_for("has")
+        Some(entry) => test.assert(csserror.unsupported_code(entry) == "level4_logical")
+        None        => test.fail(":has() is in the catalogue")
+    match csserror.unsupported_for("where")
+        Some(entry) => test.assert(csserror.unsupported_code(entry) == "level4_logical")
+        None        => test.fail(":where() is in the catalogue")
+
+    test.case("the state pseudo-classes")
+    match csserror.unsupported_for("checked")
+        Some(entry) => test.assert(csserror.unsupported_code(entry) == "state_pseudo_class")
+        None        => test.fail(":checked is in the catalogue")
+
+    test.case("the pseudo-elements")
+    match csserror.unsupported_for("before")
+        Some(entry) => test.assert(csserror.unsupported_code(entry) == "pseudo_element")
+        None        => test.fail("::before is in the catalogue")
+
+    test.case("a name this package implements is not in the catalogue at all")
+    match csserror.unsupported_for("first-child")
+        Some(_) => test.fail(":first-child is implemented")
+        None    => test.assert(true)
+
+    test.case("and neither is a typo")
+    match csserror.unsupported_for("hovr")
+        Some(_) => test.fail("that name has never been defined")
+        None    => test.assert(true)
+
+@test
+fn test_every_entry_carries_a_reason_and_not_only_a_name() [io]
+    // "Not supported" sends a caller looking for a version that
+    // supports it, and two of the three reasons mean no version will.
+    test.case("each entry has both")
+    test.assert(str.len(csserror.unsupported_name(CssLevel4Logical)) > 0)
+    test.assert(str.len(csserror.unsupported_reason(CssLevel4Logical)) > 0)
+    test.assert(str.len(csserror.unsupported_name(CssLevel4NthOf)) > 0)
+    test.assert(str.len(csserror.unsupported_reason(CssLevel4AttrFlags)) > 0)
+    test.assert(str.len(csserror.unsupported_name(CssLevel4Linguistic)) > 0)
+    test.assert(str.len(csserror.unsupported_reason(CssStatePseudoClass)) > 0)
+    test.assert(str.len(csserror.unsupported_name(CssPseudoElement)) > 0)
+    test.assert(str.len(csserror.unsupported_reason(CssNamespacePrefix)) > 0)
+
+    test.case("and the codes are distinct, so a metric counts them apart")
+    test.assert(csserror.unsupported_code(CssPseudoElement)
+                != csserror.unsupported_code(CssStatePseudoClass))
+
+@test
+fn test_every_fault_knows_where_it_is_and_can_point_at_it() [io]
+    test.case("an offset on every arm")
+    test.assert(csserror.offset(CssUnexpected(3, 64)) == 3)
+    test.assert(csserror.offset(CssUnclosed(1, 91)) == 1)
+    test.assert(csserror.offset(CssEmptySelector(0)) == 0)
+    test.assert(csserror.offset(CssBadOperator(5, "!=")) == 5)
+    test.assert(csserror.offset(CssUnknownPseudo(1, "hovr")) == 1)
+    test.assert(csserror.offset(CssBadNth(6, "2n+")) == 6)
+    test.assert(csserror.offset(CssBadNegation(1)) == 1)
+    test.assert(csserror.offset(CssDanglingCombinator(2)) == 2)
+    test.assert(csserror.offset(CssNotImplemented(1, "hover", CssStatePseudoClass)) == 1)
+
+    test.case("and a caret line no two tools build differently")
+    let drawn = csserror.caret("a >", CssDanglingCombinator(2))
+    test.assert(str.len(drawn) > str.len("a >"))
+
+    test.case("a message for a log")
+    test.assert(str.len(CssEmptySelector(0).message()) > 0)
+    test.assert(str.len(CssNotImplemented(1, "hover", CssStatePseudoClass).message()) > 0)
+
+    test.case("and one code per arm")
+    test.assert(csserror.code(CssUnexpected(3, 64)) == "unexpected")
+    test.assert(csserror.code(CssUnclosed(1, 91)) == "unclosed")
