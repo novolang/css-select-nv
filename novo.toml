@@ -1,6 +1,6 @@
 [package]
 name        = "css-select-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "Selectors Level 3 in full, parsed once into a value a caller can read: the type, universal, id, class and attribute selectors, the four combinators, every structural pseudo-class including the an+b micro-syntax, and `:not()` — matched against html-nv's tree, with specificity computed and Level 4 named as left out."
 license     = "Apache-2.0"
 
@@ -46,4 +46,4 @@ novo        = ">= 0.9.0"
 # alternatives.  A caller that wants `div` or `.row` matched should use
 # htmlquery, which parses nothing; a caller that has a selector a user
 # or a stylesheet wrote uses this.
-html-nv = "^0.0.1"
+html-nv = "^0.1.0"
