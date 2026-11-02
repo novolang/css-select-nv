@@ -4,5 +4,5 @@
 source = "registry"
 url = "https://registry.novo-lang.org"
 req = "^0.1.0"
-version = "0.1.0"
-hash = "491b9a141c5e45570faff7cca880a70f5546f39ff366401f2386523abed983ee"
+version = "0.1.1"
+hash = "6c2f3319f46f9ea19dd5b0fdc06d03e4aecf1bb2debdc7e985bccfb04f3b2751"

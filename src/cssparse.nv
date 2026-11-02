@@ -218,6 +218,619 @@ pub struct CssSelector
     // with no alternatives.
     alternatives: [CssComplex]
 
+// The byte at an offset, or `0 - 1` past either end.  A scan asks
+// this far more often than it asks anything else, and `0 - 1` is a
+// byte no selector holds, so it reads as nothing at every call site.
+fn byte(s: Str, i: Int) -> Int
+    str.byte_at_or(s, i, 0 - 1)
+
+// Whether a byte is CSS whitespace, which is the five bytes section
+// 10.2 spells `[ \t\r\n\f]` and not the vertical tab.
+fn space(b: Int) -> Bool
+    b == ' ' or b == '\t' or b == '\n' or b == 12 or b == '\r'
+
+// Whether a byte is an ASCII digit.
+fn digit(b: Int) -> Bool
+    b >= '0' and b <= '9'
+
+// Whether a byte is an ASCII hex digit.
+fn hex_digit(b: Int) -> Bool
+    b >= '0' and b <= '9' or b >= 'a' and b <= 'f' or b >= 'A' and b <= 'F'
+
+// The value of an ASCII hex digit, which the caller has already
+// checked is one.
+fn hex_value(b: Int) -> Int
+    if b >= '0' and b <= '9'
+        return b - '0'
+    if b >= 'a' and b <= 'f'
+        return b - 'a' + 10
+    b - 'A' + 10
+
+// The offset just past the escape at `i`, whose byte is a backslash,
+// or `i` when no escape begins there.  Section 10.2's escape is one
+// to six hex digits with one whitespace byte after them optional, or
+// any byte that is neither a newline nor a hex digit taken literally.
+fn escape_end(s: Str, i: Int) -> Int
+    let b = byte(s, i + 1)
+    if hex_digit(b)
+        var k = i + 2
+        var n = 1
+        while n < 6 and hex_digit(byte(s, k))
+            k = k + 1
+            n = n + 1
+        if byte(s, k) == '\r' and byte(s, k + 1) == '\n'
+            return k + 2
+        if space(byte(s, k))
+            return k + 1
+        return k
+    if b < 0 or b == '\n' or b == '\r' or b == 12
+        return i
+    i + 2
+
+// The code point a hex escape names.  `i` is its backslash and one to
+// six hex digits follow it.
+fn hex_escape(s: Str, i: Int) -> Int
+    var k = i + 1
+    var n = 0
+    var v = 0
+    while n < 6 and hex_digit(byte(s, k))
+        v = v * 16 + hex_value(byte(s, k))
+        k = k + 1
+        n = n + 1
+    v
+
+// The text an escape stands for: a hex escape names a code point and
+// a literal escape is the byte after its backslash.  A hex escape of
+// zero is the replacement character, as section 10.2 says, because a
+// NUL byte is not part of a name.
+fn escape_text(s: Str, i: Int) -> Str
+    if hex_digit(byte(s, i + 1))
+        let v = hex_escape(s, i)
+        if v == 0
+            return "\u{FFFD}"
+        return str.from_char(v)
+    str.byte_str_at(s, i + 1) ?? ""
+
+// The text of the identifier in [lo, hi), with its escapes decoded.
+// The scan that found the identifier already knows where it ends, so
+// this never scans for that again.
+fn ident_text(s: Str, lo: Int, hi: Int) -> Str
+    let sb = str.builder_new_cap(hi - lo)
+    var i = lo
+    while i < hi
+        if byte(s, i) == '\\'
+            let e = escape_end(s, i)
+            if e > i
+                let _ = str.builder_append(sb, escape_text(s, i))
+                i = e
+            // cov: skip — ident_end ends the name at a backslash that begins no escape, so a range reaching here holds none
+            else
+                str.builder_append_char(sb, byte(s, i))
+                i = i + 1
+        else
+            str.builder_append_char(sb, byte(s, i))
+            i = i + 1
+    let out = str.builder_to_str(sb)
+    str.builder_drop(sb)
+    out
+
+// Whether a byte can begin a CSS name: a letter, `_`, a non-ASCII
+// byte or a backslash beginning an escape.  A digit cannot, which is
+// what tells `a1` from `1a`.
+fn name_start(b: Int) -> Bool
+    b == '_' or b >= 'a' and b <= 'z' or b >= 'A' and b <= 'Z' or b >= 128 or b == '\\'
+
+// Whether a byte can continue one: a name start, a digit or a hyphen.
+fn name_byte(b: Int) -> Bool
+    name_start(b) or digit(b) or b == '-'
+
+// The end of the identifier beginning at `i`, or `i` when none begins
+// there.  Section 10.2's `ident` is an optional hyphen, a name start
+// and any number of name bytes, so a lone hyphen is not one.
+fn ident_end(s: Str, i: Int) -> Int
+    var k = i
+    if byte(s, k) == '-'
+        k = k + 1
+    let b = byte(s, k)
+    match b
+        92                 =>
+            let e = escape_end(s, k)
+            if e == k
+                return i
+            k = e
+        _ if name_start(b) =>
+            k = k + 1
+        _                  =>
+            return i
+    loop
+        let c = byte(s, k)
+        match c
+            92                =>
+                let e = escape_end(s, k)
+                if e == k
+                    return k
+                k = e
+            _ if name_byte(c) =>
+                k = k + 1
+            _                 =>
+                return k
+
+// A name with its ASCII capitals lowered, which is the comparison
+// html-nv's tree has already made on every tag and attribute name.
+// Not `str.lower`, which also folds bytes above 127 that HTML leaves
+// alone.
+fn lowered(s: Str) -> Str
+    let sb = str.builder_new_cap(str.len(s))
+    for i in 0..str.len(s)
+        let b = byte(s, i)
+        if b >= 'A' and b <= 'Z'
+            str.builder_append_char(sb, b + 32)
+        else
+            str.builder_append_char(sb, b)
+    let out = str.builder_to_str(sb)
+    str.builder_drop(sb)
+    out
+
+// The value of a non-empty run of ASCII digits, held to 10^9: a run of
+// more than nine digits stands for a position no document has, and a
+// bound keeps the arithmetic of `nth_matches` inside an Int.
+fn int_of(digits: Str) -> Int
+    if str.len(digits) > 9
+        return 1000000000
+    str.to_int(digits) ?? 0
+
+// The sign written at an offset: `-` is minus one, `+` is one, and
+// anything else is no sign at all, which zero says.
+fn nth_sign(body: Str, i: Int) -> Int
+    if byte(body, i) == '-'
+        return 0 - 1
+    if byte(body, i) == '+'
+        return 1
+    0
+
+// The name written at an offset, lowered, or `""` for something that
+// is not a name.  `odd` and `even` are matched through it because
+// section 10.2's tokenizer is case-insensitive, so `ODD` is `odd`.
+fn nth_word(body: Str, i: Int) -> Str
+    let e = ident_end(body, i)
+    if e == i
+        return ""
+    lowered(ident_text(body, i, e))
+
+// Whether an `:nth-*()` body carries the Level 4 `of S` filter, which
+// is a whole selector after the word `of` and a space.  Recognised so
+// that a valid selector is named rather than called a syntax error.
+fn has_of(body: Str) -> Bool
+    for i in 0..str.len(body)
+        if space(byte(body, i))
+            var j = i
+            while space(byte(body, j))
+                j = j + 1
+            if nth_word(body, j) == "of"
+                return true
+    false
+
+// A parse in progress: the offset the scan has reached.  One mutable
+// field rather than a position threaded through every call, because a
+// scanner that answers its new position cannot also answer a fault.
+struct CssCursor
+    var at: Int
+
+// Skip whitespace, wherever the grammar a caller is in allows it.
+fn skip_space(var c: CssCursor, s: Str)
+    while space(byte(s, c.at))
+        c.at = c.at + 1
+
+// The combinator a byte spells, which the caller has already read and
+// knows is one of the three.
+fn combinator_of(b: Int) -> CssCombinator
+    if b == '>'
+        return CssChild
+    if b == '+'
+        return CssAdjacent
+    CssSibling
+
+// The local name of a type selector whose namespace prefix has already
+// been read, or the universal selector after one.  A prefix that is
+// neither absent nor `*` is refused: html-nv's tree records no
+// namespace for a node, so there is nothing to compare one against.
+fn local_name(var c: CssCursor, s: Str, namespace: Str,
+              at: Int) -> Result<CssSimple, csserror.CssFault>
+    if namespace != "" and namespace != "*"
+        return Err(CssNotImplemented(at, namespace, CssNamespacePrefix))
+    let b = byte(s, c.at)
+    if b == '*'
+        c.at = c.at + 1
+        return Ok(CssUniversal)
+    let e = ident_end(s, c.at)
+    if e == c.at
+        return Err(CssUnexpected(c.at, b))
+    let name = lowered(ident_text(s, c.at, e))
+    c.at = e
+    Ok(CssType(name, namespace))
+
+// A type selector or the universal selector, with the namespace prefix
+// the grammar allows in front of either.  The three prefixes are read
+// apart from the ident, because `[lang|=en]` and `svg|rect` begin the
+// same way and only the second is a namespace.
+fn type_or_universal(var c: CssCursor, s: Str) -> Result<CssSimple, csserror.CssFault>
+    let at = c.at
+    let b = byte(s, c.at)
+    if b == '*'
+        if byte(s, c.at + 1) == '|'
+            c.at = c.at + 2
+            return local_name(var c, s, "*", at)
+        c.at = c.at + 1
+        return Ok(CssUniversal)
+    if b == '|'
+        c.at = c.at + 1
+        return local_name(var c, s, "", at)
+    let e = ident_end(s, c.at)
+    if e > c.at
+        let name = ident_text(s, c.at, e)
+        if byte(s, e) == '|' and byte(s, e + 1) != '='
+            c.at = e + 1
+            return local_name(var c, s, name, at)
+        c.at = e
+        return Ok(CssType(lowered(name), ""))
+    // cov: skip — compound calls this only where a name, a `*` or a `|` begins, so the byte here is never this one
+    Err(CssUnexpected(c.at, b))
+
+// A `#id` or `.class` after its sigil, which the caller has read.
+// Neither name is lowered: HTML compares an id and a class value
+// case-sensitively, so a selector's own case is its meaning.
+fn sigil_simple(var c: CssCursor, s: Str, sigil: Int) -> Result<CssSimple, csserror.CssFault>
+    let e = ident_end(s, c.at + 1)
+    if e == c.at + 1
+        return Err(CssUnexpected(c.at + 1, byte(s, c.at + 1)))
+    let name = ident_text(s, c.at + 1, e)
+    c.at = e
+    if sigil == '#'
+        return Ok(CssId(name))
+    Ok(CssClass(name))
+
+// The offset of the quote closing the string whose opening quote is at
+// `i`, or `None` when it is never closed.  A backslash escapes what
+// follows it, so `\"` does not close one.
+fn string_end(s: Str, i: Int, q: Int) -> ?Int
+    var k = i + 1
+    loop
+        let b = byte(s, k)
+        if b < 0
+            return None
+        match b
+            92          =>
+                let e = escape_end(s, k)
+                if e > k
+                    k = e
+                else
+                    k = k + 1
+            _ if b == q =>
+                return Some(k)
+            _           =>
+                k = k + 1
+
+// The text of the string in [lo, hi), which are the bytes between its
+// quotes, with its escapes decoded.  An escape running past `hi` stops
+// there rather than consuming the quote that closed the string.
+fn string_text(s: Str, lo: Int, hi: Int) -> Str
+    let sb = str.builder_new_cap(hi - lo)
+    var i = lo
+    while i < hi
+        if byte(s, i) == '\\'
+            let e = escape_end(s, i)
+            if e > i and e <= hi
+                let _ = str.builder_append(sb, escape_text(s, i))
+                i = e
+            else if e > hi
+                // cov: skip — string_end walks the same escape rule, so a range it answered never holds an escape past the close
+                i = hi
+            else
+                str.builder_append_char(sb, byte(s, i))
+                i = i + 1
+        else
+            str.builder_append_char(sb, byte(s, i))
+            i = i + 1
+    let out = str.builder_to_str(sb)
+    str.builder_drop(sb)
+    out
+
+// The operator bytes written where one of the seven should be, so a
+// message can say what was there.  It stops at whatever cannot be part
+// of an operator, which leaves `!=` whole and only `!` of `!foo`.
+fn operator_written(s: Str, i: Int) -> Str
+    var e = i
+    while byte(s, e) >= 0 and not name_byte(byte(s, e)) and not space(byte(s, e))
+        if byte(s, e) == ']' or byte(s, e) == '"' or byte(s, e) == '\''
+            return str.slice(s, i, e)
+        e = e + 1
+    str.slice(s, i, e)
+
+// One attribute selector, from its `[` to its `]`.  The name is
+// lowered and the value is not, because HTML defines an attribute NAME
+// as case-insensitive and a value as the caller's own text.
+fn attribute(var c: CssCursor, s: Str) -> Result<CssSimple, csserror.CssFault>
+    let open = c.at
+    c.at = c.at + 1
+    skip_space(c, s)
+    let prefix = c.at
+    var namespace = ""
+    match byte(s, c.at)
+        42  =>
+            if byte(s, c.at + 1) != '|'
+                return Err(CssUnexpected(c.at, '*'))
+            namespace = "*"
+            c.at = c.at + 2
+        124 =>
+            c.at = c.at + 1
+        _   =>
+            let e = ident_end(s, c.at)
+            if e > c.at and byte(s, e) == '|' and byte(s, e + 1) != '='
+                namespace = ident_text(s, c.at, e)
+                c.at = e + 1
+    if namespace != "" and namespace != "*"
+        return Err(CssNotImplemented(prefix, namespace, CssNamespacePrefix))
+    skip_space(c, s)
+    let name_end = ident_end(s, c.at)
+    if name_end == c.at
+        if byte(s, c.at) < 0
+            return Err(CssUnclosed(open, '['))
+        return Err(CssUnexpected(c.at, byte(s, c.at)))
+    let name = lowered(ident_text(s, c.at, name_end))
+    c.at = name_end
+    skip_space(c, s)
+    let b = byte(s, c.at)
+    if b < 0
+        return Err(CssUnclosed(open, '['))
+    if b == ']'
+        c.at = c.at + 1
+        return Ok(CssAttr(name, CssExists, ""))
+    var op = CssEquals
+    var matched = true
+    if b == '='
+        c.at = c.at + 1
+    else
+        let second = byte(s, c.at + 1)
+        match b
+            _ if second != '=' =>
+                matched = false
+            126                =>
+                op = CssIncludes
+            94                 =>
+                op = CssPrefix
+            36                 =>
+                op = CssSuffix
+            42                 =>
+                op = CssSubstring
+            124                =>
+                op = CssDashMatch
+            _                  =>
+                matched = false
+        if matched
+            c.at = c.at + 2
+    if not matched
+        return Err(CssBadOperator(c.at, operator_written(s, c.at)))
+    skip_space(c, s)
+    let q = byte(s, c.at)
+    var value = ""
+    if q == '"' or q == '\''
+        let Some(e) = string_end(s, c.at, q) else
+            return Err(CssUnclosed(c.at, q))
+        value = string_text(s, c.at + 1, e)
+        c.at = e + 1
+    else
+        let e = ident_end(s, c.at)
+        if e == c.at
+            if byte(s, c.at) < 0
+                return Err(CssUnclosed(open, '['))
+            return Err(CssUnexpected(c.at, byte(s, c.at)))
+        value = ident_text(s, c.at, e)
+        c.at = e
+    skip_space(c, s)
+    let flag_at = c.at
+    let flag_end = ident_end(s, c.at)
+    if flag_end > flag_at
+        let flag = lowered(ident_text(s, flag_at, flag_end))
+        if flag == "i" or flag == "s"
+            c.at = flag_end
+            skip_space(c, s)
+            if byte(s, c.at) == ']'
+                return Err(CssNotImplemented(flag_at, flag, CssLevel4AttrFlags))
+            return Err(CssUnexpected(c.at, byte(s, c.at)))
+    if byte(s, c.at) != ']'
+        if byte(s, c.at) < 0
+            return Err(CssUnclosed(open, '['))
+        return Err(CssUnexpected(c.at, byte(s, c.at)))
+    c.at = c.at + 1
+    Ok(CssAttr(name, op, value))
+
+// The four `:nth-*()` pseudo-classes, which differ only in which kind
+// they build, so one body reads the an+b body and picks.  The body is
+// taken up to the first `)`, which is what makes an unclosed one a
+// fault of its own.
+fn nth_pseudo(var c: CssCursor, s: Str, colon: Int,
+              name: Str) -> Result<CssSimple, csserror.CssFault>
+    if byte(s, c.at) != '('
+        return Err(CssUnexpected(c.at, byte(s, c.at)))
+    let open = c.at
+    var k = c.at + 1
+    while byte(s, k) >= 0 and byte(s, k) != ')'
+        k = k + 1
+    if byte(s, k) < 0
+        return Err(CssUnclosed(open, '('))
+    let body = str.slice(s, open + 1, k)
+    c.at = k + 1
+    if has_of(body)
+        return Err(CssNotImplemented(open, name, CssLevel4NthOf))
+    match parse_nth(body)
+        Err(_)  => Err(CssBadNth(open, body))
+        Ok(nth) =>
+            match name
+                "nth-child"      => Ok(CssPseudoClass(CssNthChild(nth.step, nth.offset)))
+                "nth-last-child" => Ok(CssPseudoClass(CssNthLastChild(nth.step, nth.offset)))
+                "nth-of-type"    => Ok(CssPseudoClass(CssNthOfType(nth.step, nth.offset)))
+                _                => Ok(CssPseudoClass(CssNthLastOfType(nth.step, nth.offset)))
+
+// One pseudo-class by name, from the nine structural ones this package
+// implements to the four kinds of name it refuses.  The name is
+// already lowered and the offset is the first colon, so every fault
+// points at where the caller wrote it.
+fn pseudo_simple(var c: CssCursor, s: Str, colon: Int,
+                 name: Str) -> Result<CssSimple, csserror.CssFault>
+    match name
+        "root"             => Ok(CssPseudoClass(CssRoot))
+        "empty"            => Ok(CssPseudoClass(CssEmpty))
+        "first-child"      => Ok(CssPseudoClass(CssFirstChild))
+        "last-child"       => Ok(CssPseudoClass(CssLastChild))
+        "only-child"       => Ok(CssPseudoClass(CssOnlyChild))
+        "first-of-type"    => Ok(CssPseudoClass(CssFirstOfType))
+        "last-of-type"     => Ok(CssPseudoClass(CssLastOfType))
+        "only-of-type"     => Ok(CssPseudoClass(CssOnlyOfType))
+        "nth-child"        => nth_pseudo(var c, s, colon, name)
+        "nth-last-child"   => nth_pseudo(var c, s, colon, name)
+        "nth-of-type"      => nth_pseudo(var c, s, colon, name)
+        "nth-last-of-type" => nth_pseudo(var c, s, colon, name)
+        // Level 3 lets these four be written with one colon, and they
+        // are pseudo-elements either way, so they are named rather
+        // than called a syntax error.
+        "before"           => Err(CssNotImplemented(colon, name, CssPseudoElement))
+        "after"            => Err(CssNotImplemented(colon, name, CssPseudoElement))
+        "first-line"       => Err(CssNotImplemented(colon, name, CssPseudoElement))
+        "first-letter"     => Err(CssNotImplemented(colon, name, CssPseudoElement))
+        _                  =>
+            match csserror.unsupported_for(name)
+                Some(entry) => Err(CssNotImplemented(colon, name, entry))
+                None        => Err(CssUnknownPseudo(colon, name))
+
+// The argument of `:not()`, which Level 3 admits exactly one simple
+// selector in.  The positive part of a compound is read by the same
+// code, and the `)` check at the end is what catches `:not(a.b)`: a
+// selector still being read where the argument should have ended is
+// the Level 4 form.
+fn not_arg(var c: CssCursor, s: Str, colon: Int) -> Result<CssSimple, csserror.CssFault>
+    if byte(s, c.at) != '('
+        return Err(CssUnexpected(c.at, byte(s, c.at)))
+    let open = c.at
+    c.at = c.at + 1
+    skip_space(c, s)
+    let b = byte(s, c.at)
+    var simple = CssUniversal
+    match b
+        42 | 124                       =>
+            simple = type_or_universal(var c, s)!
+        35                             =>
+            simple = sigil_simple(var c, s, '#')!
+        46                             =>
+            simple = sigil_simple(var c, s, '.')!
+        91                             =>
+            simple = attribute(c, s)!
+        58                             =>
+            let inner = c.at
+            if byte(s, c.at + 1) == ':'
+                return Err(CssBadNegation(colon))
+            let e = ident_end(s, c.at + 1)
+            if e == c.at + 1
+                return Err(CssBadNegation(colon))
+            let name = lowered(ident_text(s, c.at + 1, e))
+            c.at = e
+            if name == "not"
+                return Err(CssBadNegation(colon))
+            simple = pseudo_simple(var c, s, inner, name)!
+        _ if ident_end(s, c.at) > c.at =>
+            simple = type_or_universal(var c, s)!
+        _                              =>
+            return Err(CssBadNegation(colon))
+    skip_space(c, s)
+    if byte(s, c.at) != ')'
+        if byte(s, c.at) < 0
+            return Err(CssUnclosed(open, '('))
+        return Err(CssBadNegation(colon))
+    c.at = c.at + 1
+    Ok(simple)
+
+// The compound as parsed, with an implied universal written in when
+// nothing was: a compound holds at least one simple selector, so
+// `"> p"` and `"* > p"` parse to the same shape.
+fn finished(simples: [CssSimple], negations: [CssSimple]) -> CssCompound
+    if list.len(simples) == 0
+        return CssCompound { simples: [CssUniversal], negations: negations }
+    CssCompound { simples: simples, negations: negations }
+
+// One compound: a type or universal selector, then as many `#id`,
+// `.class`, `[attr]` and `:pseudo` as are written.  `:not()` lands in
+// `negations` instead, which is the whole difference between the two
+// lists.
+fn compound(var c: CssCursor, s: Str) -> Result<CssCompound, csserror.CssFault>
+    let start = c.at
+    var simples: [CssSimple] = []
+    var negations: [CssSimple] = []
+    let b0 = byte(s, c.at)
+    if b0 == '>' or b0 == '+' or b0 == '~'
+        return Err(CssDanglingCombinator(c.at))
+    if b0 == '*' or b0 == '|' or ident_end(s, c.at) > c.at
+        simples = list.push(simples, type_or_universal(var c, s)!)
+    loop
+        let b = byte(s, c.at)
+        match b
+            35                 =>
+                simples = list.push(simples, sigil_simple(var c, s, '#')!)
+            46                 =>
+                simples = list.push(simples, sigil_simple(var c, s, '.')!)
+            91                 =>
+                simples = list.push(simples, attribute(c, s)!)
+            58                 =>
+                if byte(s, c.at + 1) == ':'
+                    let e = ident_end(s, c.at + 2)
+                    if e == c.at + 2
+                        return Err(CssUnexpected(c.at + 2, byte(s, c.at + 2)))
+                    return Err(CssNotImplemented(c.at, lowered(ident_text(s, c.at + 2, e)), CssPseudoElement))
+                let colon = c.at
+                let e = ident_end(s, c.at + 1)
+                if e == c.at + 1
+                    return Err(CssUnexpected(c.at + 1, byte(s, c.at + 1)))
+                let name = lowered(ident_text(s, c.at + 1, e))
+                c.at = e
+                if name == "not"
+                    negations = list.push(negations, not_arg(var c, s, colon)!)
+                else
+                    simples = list.push(simples, pseudo_simple(var c, s, colon, name)!)
+            _ if c.at == start =>
+                if b < 0
+                    return Err(CssEmptySelector(c.at))
+                return Err(CssUnexpected(c.at, b))
+            _                  =>
+                return Ok(finished(simples, negations))
+
+// One alternative: compounds joined by combinators, up to a comma or
+// the end of the selector.  The whitespace that means a descendant
+// combinator and the whitespace that means nothing are told apart by
+// whether a compound follows.
+fn alternative(var c: CssCursor, s: Str) -> Result<CssComplex, csserror.CssFault>
+    let n = str.len(s)
+    var compounds: [CssCompound] = []
+    var combinators: [CssCombinator] = []
+    compounds = list.push(compounds, compound(c, s)!)
+    loop
+        let before = c.at
+        skip_space(c, s)
+        let spaced = c.at > before
+        let b = byte(s, c.at)
+        if b == '>' or b == '+' or b == '~'
+            let at = c.at
+            c.at = c.at + 1
+            skip_space(c, s)
+            if c.at >= n or byte(s, c.at) == ','
+                return Err(CssDanglingCombinator(at))
+            combinators = list.push(combinators, combinator_of(b))
+            compounds = list.push(compounds, compound(c, s)!)
+        else if c.at >= n or b == ','
+            return Ok(CssComplex { compounds: compounds, combinators: combinators })
+        else if spaced
+            combinators = list.push(combinators, CssDescendant)
+            compounds = list.push(compounds, compound(c, s)!)
+        else
+            return Err(CssUnexpected(c.at, b))
+
 // A selector, parsed.
 //
 // The whole grammar of Level 3 section 5, and the refusals of
@@ -232,7 +845,25 @@ pub struct CssSelector
 //         Err(fault)   => println(fault.message())
 // ```
 pub fn parse(selector: Str) -> Result<CssSelector, csserror.CssFault> []
-    todo("css-select-nv.cssparse.parse")
+    // A comma separates alternatives and nothing else, so the commas
+    // are read here and the alternatives themselves are read by
+    // `alternative`, which never sees one.
+    let n = str.len(selector)
+    var c = CssCursor { at: 0 }
+    var alternatives: [CssComplex] = []
+    loop
+        skip_space(c, selector)
+        alternatives = list.push(alternatives, alternative(var c, selector)!)
+        skip_space(c, selector)
+        if c.at >= n
+            return Ok(CssSelector { source: selector, alternatives: alternatives })
+        if byte(selector, c.at) != ','
+            // cov: skip — alternative answers at a comma or at the end, so the byte below is always a comma
+            return Err(CssUnexpected(c.at, byte(selector, c.at)))
+        c.at = c.at + 1
+        skip_space(c, selector)
+        if c.at >= n or byte(selector, c.at) == ','
+            return Err(CssEmptySelector(c.at))
 
 // One alternative, parsed.
 //
@@ -249,7 +880,16 @@ pub fn parse(selector: Str) -> Result<CssSelector, csserror.CssFault> []
 //         Err(fault)  => println(fault.message())
 // ```
 pub fn parse_one(selector: Str) -> Result<CssComplex, csserror.CssFault> []
-    todo("css-select-nv.cssparse.parse_one")
+    // A comma left over at the end is a syntax error here rather than
+    // silently ignored, because a caller that reached for this
+    // function wanted one alternative and a list is not one.
+    var c = CssCursor { at: 0 }
+    skip_space(c, selector)
+    let complex = alternative(var c, selector)!
+    skip_space(c, selector)
+    if c.at < str.len(selector)
+        return Err(CssUnexpected(c.at, byte(selector, c.at)))
+    Ok(complex)
 
 // Whether a string is a selector this package can compile.
 //
@@ -264,7 +904,12 @@ pub fn parse_one(selector: Str) -> Result<CssComplex, csserror.CssFault> []
 //     println("${cssparse.is_valid("a >")}")
 // ```
 pub fn is_valid(selector: Str) -> Bool []
-    todo("css-select-nv.cssparse.is_valid")
+    // The cheap question is the whole parse with the value dropped:
+    // a selector this package can compile is one `parse` says Ok to,
+    // and a second grammar would be a second thing to keep right.
+    match parse(selector)
+        Ok(_)  => true
+        Err(_) => false
 
 // An `an+b` body, parsed into its two numbers.
 //
@@ -286,7 +931,60 @@ pub fn is_valid(selector: Str) -> Bool []
 //         Err(fault) => println(fault.message())
 // ```
 pub fn parse_nth(body: Str) -> Result<CssNth, csserror.CssFault> []
-    todo("css-select-nv.cssparse.parse_nth")
+    // Section 6.6.5.2's `nth` production, in its order: the two
+    // keywords first, then an optional sign and digits that either
+    // meet an `n` or stand alone as a position.  Whitespace is
+    // allowed after the sign of the step and around the sign of the
+    // offset, and nowhere else.
+    let n = str.len(body)
+    var c = CssCursor { at: 0 }
+    skip_space(c, body)
+    let word = nth_word(body, c.at)
+    if word == "odd"
+        return Ok(CssNth { step: 2, offset: 1 })
+    if word == "even"
+        return Ok(CssNth { step: 2, offset: 0 })
+    let leading = nth_sign(body, c.at)
+    if leading != 0
+        c.at = c.at + 1
+    let dlo = c.at
+    while digit(byte(body, c.at))
+        c.at = c.at + 1
+    let digits = str.slice(body, dlo, c.at)
+    if byte(body, c.at) == 'n' or byte(body, c.at) == 'N'
+        c.at = c.at + 1
+        var step = 1
+        if str.len(digits) > 0
+            step = int_of(digits)
+        if leading < 0
+            step = 0 - step
+        var offset = 0
+        skip_space(c, body)
+        let op = nth_sign(body, c.at)
+        if op != 0
+            c.at = c.at + 1
+            skip_space(c, body)
+            let blo = c.at
+            while digit(byte(body, c.at))
+                c.at = c.at + 1
+            if c.at == blo
+                return Err(CssBadNth(0, body))
+            offset = int_of(str.slice(body, blo, c.at))
+            if op < 0
+                offset = 0 - offset
+        skip_space(c, body)
+        if c.at != n
+            return Err(CssBadNth(0, body))
+        return Ok(CssNth { step: step, offset: offset })
+    if str.len(digits) == 0
+        return Err(CssBadNth(0, body))
+    var offset = int_of(digits)
+    if leading < 0
+        offset = 0 - offset
+    skip_space(c, body)
+    if c.at != n
+        return Err(CssBadNth(0, body))
+    Ok(CssNth { step: 0, offset: offset })
 
 // The two numbers of an `an+b` expression.
 //
@@ -320,7 +1018,47 @@ pub struct CssNth
 //         Err(fault) => println(fault.message())
 // ```
 pub fn nth_matches(nth: CssNth, position: Int) -> Bool []
-    todo("css-select-nv.cssparse.nth_matches")
+    // `position == step * n + offset` for some n of zero or more, so
+    // the difference has to be a multiple of the step and the
+    // quotient has to be one.  A step of zero says the series is the
+    // single position the offset names.
+    // Both are held to 2^61 first, so a series built by hand with a
+    // huge offset cannot overflow the difference.
+    let d = clamped(position) - clamped(nth.offset)
+    if nth.step == 0
+        return d == 0
+    if d % nth.step != 0
+        return false
+    d / nth.step >= 0
+
+// A number held to plus or minus 2^61.
+fn clamped(n: Int) -> Int
+    if n > 2305843009213693952
+        return 2305843009213693952
+    if n < 0 - 2305843009213693952
+        return 0 - 2305843009213693952
+    n
+
+// One alternative printed back: its compounds in order, each one after
+// the combinator that joins it to the last, so the combinator between
+// two compounds is written where a reader of the source would find it.
+fn complex_text(complex: CssComplex) -> Str
+    var parts: [Str] = []
+    var i = 0
+    for compound in complex.compounds
+        if i > 0
+            parts = list.push(parts, combinator_text(complex.combinators[i - 1]))
+        parts = list.push(parts, compound_text(compound))
+        i = i + 1
+    str.join(parts, "")
+
+// One compound printed back: its simple selectors with nothing between
+// them, then its negations, which is where the only colon a compound
+// prints comes from.
+fn compound_text(compound: CssCompound) -> Str
+    let simples = list.map(compound.simples, simple => simple_text(simple))
+    let negations = list.map(compound.negations, negation => ":not(" + simple_text(negation) + ")")
+    str.join(list.concat(simples, negations), "")
 
 // A selector printed back from its parsed form.
 //
@@ -339,7 +1077,18 @@ pub fn nth_matches(nth: CssNth, position: Int) -> Bool []
 //         Err(fault)   => println(fault.message())
 // ```
 pub fn selector_text(selector: CssSelector) -> Str []
-    todo("css-select-nv.cssparse.selector_text")
+    // One space after each comma, which is the spelling every tool
+    // that prints a selector list uses.
+    str.join(list.map(selector.alternatives, alternative => complex_text(alternative)), ", ")
+
+// An attribute value printed inside double quotes, whichever quote the
+// selector used, because the canonical spelling has one.  A value
+// holding a double quote escapes it, so the printed form parses back
+// to the same value.
+fn quoted(value: Str) -> Str
+    if str.contains(value, "\"")
+        return "\"" + str.replace(value, "\"", "\\\"") + "\""
+    "\"" + value + "\""
 
 // One simple selector printed back.
 //
@@ -350,7 +1099,23 @@ pub fn selector_text(selector: CssSelector) -> Str []
 //     println(cssparse.simple_text(CssId("main")))
 // ```
 pub fn simple_text(simple: CssSimple) -> Str []
-    todo("css-select-nv.cssparse.simple_text")
+    match simple
+        CssUniversal             => "*"
+        CssType(name, "")        => name
+        CssType(name, namespace) =>
+            // A prefix of `*` is written back as itself, and any
+            // other one is a name this package refuses to parse, so
+            // the only way here is a value a caller built by hand.
+            if namespace == "*"
+                return "*|" + name
+            namespace + "|" + name
+        CssId(name)              => "#" + name
+        CssClass(name)           => "." + name
+        CssAttr(name, op, value) =>
+            if op == CssExists
+                return "[" + name + "]"
+            "[" + name + operator_text(op) + quoted(value) + "]"
+        CssPseudoClass(kind)     => pseudo_text(kind)
 
 // A combinator printed back: `" "`, `" > "`, `" + "`, `" ~ "`.
 //
@@ -361,7 +1126,14 @@ pub fn simple_text(simple: CssSimple) -> Str []
 //     println(cssparse.combinator_text(CssSibling))
 // ```
 pub fn combinator_text(c: CssCombinator) -> Str []
-    todo("css-select-nv.cssparse.combinator_text")
+    // The descendant combinator's spelling is one space and not the
+    // empty string, so that the two compounds it joins are still two
+    // compounds in what a caller prints.
+    match c
+        CssDescendant => " "
+        CssChild      => " > "
+        CssAdjacent   => " + "
+        CssSibling    => " ~ "
 
 // An attribute operator printed back: `"="`, `"~="`, `"^="`, and the
 // rest.  `CssExists` is `""`.
@@ -373,7 +1145,35 @@ pub fn combinator_text(c: CssCombinator) -> Str []
 //     println(cssparse.operator_text(CssDashMatch))
 // ```
 pub fn operator_text(op: CssAttrOp) -> Str []
-    todo("css-select-nv.cssparse.operator_text")
+    match op
+        CssExists    => ""
+        CssEquals    => "="
+        CssIncludes  => "~="
+        CssDashMatch => "|="
+        CssPrefix    => "^="
+        CssSuffix    => "$="
+        CssSubstring => "*="
+
+// An an+b series printed back the way a browser's own tools write one:
+// no step at all when it is zero, `n` alone for a step of one, `-n`
+// for a step of minus one, and the offset's own sign written whenever
+// there is a step in front of it.
+fn nth_text(step: Int, offset: Int) -> Str
+    if step == 0
+        return str.from_int(offset)
+    var out = ""
+    match step
+        1                  =>
+            out = "n"
+        _ if step == 0 - 1 =>
+            out = "-n"
+        _                  =>
+            out = str.from_int(step) + "n"
+    if offset > 0
+        return out + "+" + str.from_int(offset)
+    if offset < 0
+        return out + str.from_int(offset)
+    out
 
 // A structural pseudo-class printed back: `":first-child"`,
 // `":nth-child(2n+1)"`.
@@ -385,7 +1185,52 @@ pub fn operator_text(op: CssAttrOp) -> Str []
 //     println(cssparse.pseudo_text(CssNthChild(2, 1)))
 // ```
 pub fn pseudo_text(kind: CssPseudoKind) -> Str []
-    todo("css-select-nv.cssparse.pseudo_text")
+    match kind
+        CssRoot                        => ":root"
+        CssEmpty                       => ":empty"
+        CssFirstChild                  => ":first-child"
+        CssLastChild                   => ":last-child"
+        CssOnlyChild                   => ":only-child"
+        CssFirstOfType                 => ":first-of-type"
+        CssLastOfType                  => ":last-of-type"
+        CssOnlyOfType                  => ":only-of-type"
+        CssNthChild(step, offset)      => ":nth-child(" + nth_text(step, offset) + ")"
+        CssNthLastChild(step, offset)  => ":nth-last-child(" + nth_text(step, offset) + ")"
+        CssNthOfType(step, offset)     => ":nth-of-type(" + nth_text(step, offset) + ")"
+        CssNthLastOfType(step, offset) => ":nth-last-of-type(" + nth_text(step, offset) + ")"
+
+// The class name one simple selector names, or none.  A fresh list
+// answers, so the caller is free to append it to one of its own.
+fn class_of(simple: CssSimple) -> [Str]
+    match simple
+        CssClass(name) => [name]
+        _              => []
+
+// Every class name of one compound, positive part first.  A `:not()`'s
+// contents are names the selector mentions too, so both lists count.
+fn compound_classes(compound: CssCompound) -> [Str]
+    var out: [Str] = []
+    for simple in compound.simples
+        out = list.append(out, class_of(simple))
+    for simple in compound.negations
+        out = list.append(out, class_of(simple))
+    out
+
+// The tag name one simple selector names, or none.  The universal
+// selector names none, and neither does anything else here.
+fn type_of(simple: CssSimple) -> [Str]
+    match simple
+        CssType(name, _) => [name]
+        _                => []
+
+// Every tag name of one compound, positive part first.
+fn compound_types(compound: CssCompound) -> [Str]
+    var out: [Str] = []
+    for simple in compound.simples
+        out = list.append(out, type_of(simple))
+    for simple in compound.negations
+        out = list.append(out, type_of(simple))
+    out
 
 // Every class name a selector mentions, in the order they appear,
 // duplicates included.
@@ -403,7 +1248,11 @@ pub fn pseudo_text(kind: CssPseudoKind) -> Str []
 //         Err(fault)   => println(fault.message())
 // ```
 pub fn class_names(selector: CssSelector) -> [Str] []
-    todo("css-select-nv.cssparse.class_names")
+    var out: [Str] = []
+    for alternative in selector.alternatives
+        for compound in alternative.compounds
+            out = list.append(out, compound_classes(compound))
+    out
 
 // Every tag name a selector mentions, in the order they appear.
 //
@@ -416,4 +1265,8 @@ pub fn class_names(selector: CssSelector) -> [Str] []
 //         Err(fault)   => println(fault.message())
 // ```
 pub fn type_names(selector: CssSelector) -> [Str] []
-    todo("css-select-nv.cssparse.type_names")
+    var out: [Str] = []
+    for alternative in selector.alternatives
+        for compound in alternative.compounds
+            out = list.append(out, compound_types(compound))
+    out

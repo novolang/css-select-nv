@@ -1,10 +1,9 @@
 // cssspec_tests.nv — the number that decides which rule wins.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// css-select-nv.cssspec.<fn>`.  What is asserted is the counting rule
-// of Level 3 section 9, including the two halves of it people get
-// wrong: the universal selector counts nothing, and a `:not()` counts
-// its contents but not itself.
+// What is asserted is the counting rule of Level 3 section 9,
+// including the two halves of it people get wrong: the universal
+// selector counts nothing, and a `:not()` counts its contents but not
+// itself.
 
 use std.test
 use cssparse

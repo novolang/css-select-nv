@@ -8,12 +8,6 @@ matches it against the tree
 [html-nv](https://novo-lang.org/packages/html-nv) builds, and computes
 its specificity.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is
-declared with its full signature, but every body is a `todo()` that
-panics when called. The package is published so its design can be
-reviewed and depended on before it is implemented. Version 0.1.0 will
-be the first working release.
-
 ## What a selector is
 
 A **simple selector** is one condition on one element: `*`, a tag name,
@@ -94,10 +88,7 @@ fn main() [io]
             println("specificity: ${cssspec.specificity_text(cssspec.of_selector(selector))}")
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: css-select-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
+Build and test with `novo pkg build` and `novo test`.
 
 ## What the package contains
 
@@ -212,10 +203,11 @@ than matching is wanted.
 ## Tests
 
 ```bash
-novo test tests/cssparse_tests.nv   # the grammar, and the parsed tree
-novo test tests/cssmatch_tests.nv   # matching against html-nv's tree
-novo test tests/cssspec_tests.nv    # the three counts and the comparison
-novo test tests/csserror_tests.nv   # refusals, and what is not here
+novo test tests/cssparse_tests.nv        # the grammar, and the parsed tree
+novo test tests/cssmatch_tests.nv        # matching against html-nv's tree
+novo test tests/cssspec_tests.nv         # the three counts and the comparison
+novo test tests/csserror_tests.nv        # refusals, and what is not here
+novo test tests/css_select_edge_tests.nv # escapes, prefixes, and the refusals
 ```
 
 The normative source is Selectors Level 3, with section 6.6.5 for the
@@ -231,28 +223,13 @@ space, that a node appears once however many alternatives matched it,
 that a universal selector adds nothing to specificity, and that a
 `:not()` counts its contents and not itself.
 
-The tests compile today and fail at run, each on the
-`not implemented: css-select-nv.<module>.<fn>` panic that is its body.
-That is the expected state of an interface release. They turn green one
-at a time as bodies land.
-
-## Implementation status
-
-| Item | Implemented |
-| --- | --- |
-| `cssparse.CssSelector`, `.CssComplex`, `.CssCompound`, `.CssSimple`, `.CssCombinator`, `.CssAttrOp`, `.CssPseudoKind`, `.CssNth` | the types are declared |
-| `csserror.CssFault`, `.CssUnsupported`, `cssspec.CssSpecificity` | the types are declared |
-| `cssparse.parse`, `.parse_one`, `.is_valid` | no |
-| `cssparse.parse_nth`, `.nth_matches` | no |
-| `cssparse.selector_text`, `.simple_text`, `.combinator_text`, `.operator_text`, `.pseudo_text` | no |
-| `cssparse.class_names`, `.type_names` | no |
-| `cssmatch.matches`, `.matches_complex`, `.matches_compound`, `.matches_simple` | no |
-| `cssmatch.select`, `.select_all`, `.select_first`, `.closest`, `.matching_alternative` | no |
-| `cssmatch.child_position`, `.type_position`, `.sibling_count` | no |
-| `cssspec.zero`, `.of_complex`, `.of_compound`, `.of_selector` | no |
-| `cssspec.compare`, `.specificity_text`, `.is_over` | no |
-| `csserror.unsupported_name`, `.unsupported_reason`, `.unsupported_code`, `.unsupported_for` | no |
-| `csserror.offset`, `.code`, `.is_unimplemented`, `.caret`, `CssFault.message` | no |
+The edge suite asserts the corners the four suites above do not: that
+an escape is decoded the way section 10.2 says, that a namespace
+prefix is read apart from a dash-match, that an attribute value is an
+identifier or a quoted string and nothing else, that every structural
+pseudo-class and the an+b micro-syntax refuse what Level 3 does not
+admit, and that a walk off the end of a document answers rather than
+reading a node that is not there.
 
 ## Licence
 

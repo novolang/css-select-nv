@@ -33,6 +33,229 @@
 use cssparse
 use htmltree
 
+// A byte of a string, or `0 - 1` past either end, which is the value
+// every scan here treats as nothing left to read.
+fn byte(s: Str, i: Int) -> Int
+    str.byte_at_or(s, i, 0 - 1)
+
+// Whether a byte is ASCII whitespace, the five bytes an attribute
+// value is split on.
+fn space(b: Int) -> Bool
+    b == ' ' or b == '\t' or b == '\n' or b == 12 or b == '\r'
+
+// The parent of a node, or NO_NODE for the document node and for an
+// index outside the document.
+fn parent_of(doc: htmltree.HtmlDoc, i: Int) -> Int
+    if i < 0 or i >= list.len(doc.nodes)
+        return htmltree.NO_NODE
+    doc.nodes[i].parent
+
+// Whether an index is an element of the document.  The document node,
+// text, a comment and a doctype are nodes and none of them is one, so
+// this is the first question every match asks.
+fn is_element(doc: htmltree.HtmlDoc, i: Int) -> Bool
+    if i < 0 or i >= list.len(doc.nodes)
+        return false
+    match doc.nodes[i].kind
+        HtmlElement(_, _) => true
+        _                 => false
+
+// The nearest element above a node, or NO_NODE.  `:root` is answered
+// from this and the ancestor combinators climb by it.
+fn element_parent(doc: htmltree.HtmlDoc, i: Int) -> Int
+    var p = parent_of(doc, i)
+    while p != htmltree.NO_NODE and not is_element(doc, p)
+        p = parent_of(doc, p)
+    p
+
+// The element sibling before a node, or NO_NODE when there is none.
+// Text and comments are stepped over, because section 6.6.5 counts
+// elements only.
+fn previous_element(doc: htmltree.HtmlDoc, i: Int) -> Int
+    if i < 0 or i >= list.len(doc.nodes)
+        // cov: skip — every walk below starts from an index it read from the node list, so an out-of-range one is never asked
+        return htmltree.NO_NODE
+    var k = doc.nodes[i].previous_sibling
+    while k != htmltree.NO_NODE and not is_element(doc, k)
+        k = doc.nodes[k].previous_sibling
+    k
+
+// The element sibling after a node, or NO_NODE when there is none.
+fn next_element(doc: htmltree.HtmlDoc, i: Int) -> Int
+    if i < 0 or i >= list.len(doc.nodes)
+        // cov: skip — every walk below starts from an index it read from the node list, so an out-of-range one is never asked
+        return htmltree.NO_NODE
+    var k = doc.nodes[i].next_sibling
+    while k != htmltree.NO_NODE and not is_element(doc, k)
+        k = doc.nodes[k].next_sibling
+    k
+
+// How many element siblings a node has with its own tag, itself
+// included: the total `:only-of-type` and `:nth-last-of-type` are
+// answered from, so it counts on both sides of the node and not only
+// after it.
+fn type_count(doc: htmltree.HtmlDoc, i: Int) -> Int
+    if not is_element(doc, i)
+        // cov: skip — the sibling questions are asked about an element, because matches_simple turns every other node away
+        return 0
+    let want = htmltree.tag_name(doc, i)
+    var n = 1
+    var k = previous_element(doc, i)
+    while k != htmltree.NO_NODE
+        if htmltree.tag_name(doc, k) == want
+            n = n + 1
+        k = previous_element(doc, k)
+    var j = next_element(doc, i)
+    while j != htmltree.NO_NODE
+        if htmltree.tag_name(doc, j) == want
+            n = n + 1
+        j = next_element(doc, j)
+    n
+
+// Whether an element holds no child node that is content.  A comment
+// is not content; whitespace is, because it is a text node, and the
+// document node's own text is never asked about because only an
+// element is ever matched.
+fn no_content(doc: htmltree.HtmlDoc, i: Int) -> Bool
+    for child in htmltree.children(doc, i)
+        match doc.nodes[child].kind
+            HtmlComment(_) => ()
+            _              =>
+                return false
+    true
+
+// Whether a whitespace-separated list of words holds one, which is
+// what `~=` compares.  A word is a run of non-whitespace bytes, so
+// `has_word("a b", "b")` is true and `has_word("ab", "b")` is not.
+fn has_word(value: Str, want: Str) -> Bool
+    let n = str.len(value)
+    var start: ?Int = None
+    for i in 0..n + 1
+        let at_edge = i == n or space(byte(value, i))
+        if at_edge
+            if let Some(from) = start
+                if str.slice(value, from, i) == want
+                    return true
+                start = None
+        if not at_edge and start == None
+            start = Some(i)
+    false
+
+// Whether an attribute value passes one operator.  Two of the seven
+// say something about an absent value and the rest cannot, and the
+// four string ones match nothing against an empty value because every
+// string holds an empty one.
+fn attr_matches(op: cssparse.CssAttrOp, value: Str, want: Str) -> Bool
+    if op == CssExists
+        return true
+    if op == CssEquals
+        return value == want
+    if op == CssIncludes
+        return str.len(want) > 0 and has_word(value, want)
+    if op == CssDashMatch
+        return value == want or str.starts_with(value, want + "-")
+    if str.len(want) == 0
+        return false
+    if op == CssPrefix
+        return str.starts_with(value, want)
+    if op == CssSuffix
+        return str.ends_with(value, want)
+    str.contains(value, want)
+
+// The structural pseudo-classes that count element siblings.  The
+// outermost element has none, so it is nobody's child and none of
+// these holds of it: a document holding exactly one element has no
+// `:only-child` in it.
+fn sibling_pseudo(doc: htmltree.HtmlDoc, i: Int, kind: cssparse.CssPseudoKind) -> Bool
+    if element_parent(doc, i) == htmltree.NO_NODE
+        return false
+    match kind
+        CssFirstChild                  => child_position(doc, i) == 1
+        CssLastChild                   => sibling_count(doc, i) == child_position(doc, i)
+        CssOnlyChild                   => sibling_count(doc, i) == 1
+        CssFirstOfType                 => type_position(doc, i) == 1
+        CssLastOfType                  => type_count(doc, i) == type_position(doc, i)
+        CssOnlyOfType                  => type_count(doc, i) == 1
+        CssNthChild(step, offset)      =>
+            cssparse.nth_matches(CssNth { step: step, offset: offset }, child_position(doc, i))
+        CssNthLastChild(step, offset)  =>
+            cssparse.nth_matches(CssNth { step: step, offset: offset },
+                                 sibling_count(doc, i) - child_position(doc, i) + 1)
+        CssNthOfType(step, offset)     =>
+            cssparse.nth_matches(CssNth { step: step, offset: offset }, type_position(doc, i))
+        CssNthLastOfType(step, offset) =>
+            cssparse.nth_matches(CssNth { step: step, offset: offset },
+                                 type_count(doc, i) - type_position(doc, i) + 1)
+        // The two kinds that are not about siblings, answered by the
+        // caller before this is reached.
+        // cov: skip — pseudo_matches answers :root and :empty itself and sends this only the sibling kinds
+        _                              => false
+
+// Whether a structural pseudo-class holds of a node, which is either a
+// question about the node alone or one about its position among its
+// element siblings.  The two that count from the end turn the count
+// around: the last child is the one position one from the end.
+fn pseudo_matches(doc: htmltree.HtmlDoc, i: Int, kind: cssparse.CssPseudoKind) -> Bool
+    match kind
+        CssRoot  => element_parent(doc, i) == htmltree.NO_NODE
+        CssEmpty => no_content(doc, i)
+        _        => sibling_pseudo(doc, i, kind)
+
+// Every node at or under one node, appended to a list in document
+// order.  A tree is walked downwards by recursion and never upwards,
+// so a deep document costs stack and not a second pass.
+fn collect_from(doc: htmltree.HtmlDoc, i: Int, var out: [Int])
+    out = list.push(out, i)
+    for child in htmltree.children(doc, i)
+        collect_from(doc, child, var out)
+
+// Every node at or under `from`, in document order, `from` included:
+// a caller passing the document root wants the whole document, and a
+// caller passing an element wants that element tested too.
+fn nodes_from(doc: htmltree.HtmlDoc, from: Int) -> [Int]
+    var out: [Int] = []
+    if from < 0 or from >= list.len(doc.nodes)
+        return out
+    collect_from(doc, from, var out)
+    out
+
+// Whether a node matches the compound at `k` and every compound the
+// combinators put before it.  The rightmost compound is asked about
+// the node itself and the ones before it about its ancestors, which is
+// what lets one node be tested without the tree being walked from the
+// root, and what makes the leftmost compound the place the walk stops.
+fn chain_matches(doc: htmltree.HtmlDoc, i: Int, complex: cssparse.CssComplex, k: Int) -> Bool
+    if k < 0
+        return true
+    if not matches_compound(doc, i, complex.compounds[k])
+        return false
+    if k == 0
+        return true
+    let combinator = complex.combinators[k - 1]
+    if combinator == CssChild
+        let p = element_parent(doc, i)
+        if p == htmltree.NO_NODE
+            return false
+        return chain_matches(doc, p, complex, k - 1)
+    if combinator == CssAdjacent
+        let s = previous_element(doc, i)
+        if s == htmltree.NO_NODE
+            return false
+        return chain_matches(doc, s, complex, k - 1)
+    if combinator == CssSibling
+        var s = previous_element(doc, i)
+        while s != htmltree.NO_NODE
+            if chain_matches(doc, s, complex, k - 1)
+                return true
+            s = previous_element(doc, s)
+        return false
+    var p = element_parent(doc, i)
+    while p != htmltree.NO_NODE
+        if chain_matches(doc, p, complex, k - 1)
+            return true
+        p = element_parent(doc, p)
+    false
+
 // Whether one node matches a selector.
 //
 // True when any of the selector's alternatives matches.  The node is
@@ -55,7 +278,12 @@ use htmltree
 //         Ok(selector) => println("${cssmatch.matches(doc, 2, selector)}")
 // ```
 pub fn matches(doc: htmltree.HtmlDoc, index: Int, selector: cssparse.CssSelector) -> Bool []
-    todo("css-select-nv.cssmatch.matches")
+    // A list of alternatives is a union, so the first one that matches
+    // answers and the rest are never asked.
+    for alternative in selector.alternatives
+        if matches_complex(doc, index, alternative)
+            return true
+    false
 
 // Whether one node matches one alternative.
 //
@@ -74,7 +302,7 @@ pub fn matches(doc: htmltree.HtmlDoc, index: Int, selector: cssparse.CssSelector
 //         Ok(complex) => println("${cssmatch.matches_complex(doc, 2, complex)}")
 // ```
 pub fn matches_complex(doc: htmltree.HtmlDoc, index: Int, complex: cssparse.CssComplex) -> Bool []
-    todo("css-select-nv.cssmatch.matches_complex")
+    chain_matches(doc, index, complex, list.len(complex.compounds) - 1)
 
 // Whether one node satisfies one compound selector: every simple
 // selector in it and none of its negations.
@@ -94,7 +322,18 @@ pub fn matches_complex(doc: htmltree.HtmlDoc, index: Int, complex: cssparse.CssC
 // ```
 pub fn matches_compound(doc: htmltree.HtmlDoc, index: Int,
                         compound: cssparse.CssCompound) -> Bool []
-    todo("css-select-nv.cssmatch.matches_compound")
+    // Every simple selector has to hold and no negation may, so the
+    // positive list is read to the end and the negated list is read
+    // until one of them does hold.
+    if not is_element(doc, index)
+        return false
+    for simple in compound.simples
+        if not matches_simple(doc, index, simple)
+            return false
+    for negation in compound.negations
+        if matches_simple(doc, index, negation)
+            return false
+    true
 
 // Whether one node satisfies one simple selector.
 //
@@ -110,7 +349,24 @@ pub fn matches_compound(doc: htmltree.HtmlDoc, index: Int,
 //     println("${cssmatch.matches_simple(doc, 1, CssClass("row"))}")
 // ```
 pub fn matches_simple(doc: htmltree.HtmlDoc, index: Int, simple: cssparse.CssSimple) -> Bool []
-    todo("css-select-nv.cssmatch.matches_simple")
+    // Nothing but an element is matched, `*` included, which is what
+    // a caller walking the tree expects: the document node is not an
+    // element and neither is a run of text.
+    if not is_element(doc, index)
+        return false
+    match simple
+        CssUniversal             => true
+        CssType(name, _)         => htmltree.tag_name(doc, index) == name
+        CssId(name)              =>
+            match htmltree.attr(doc, index, "id")
+                Some(value) => value == name
+                None        => false
+        CssClass(name)           => list.contains(htmltree.classes(doc, index), name)
+        CssAttr(name, op, value) =>
+            match htmltree.attr(doc, index, name)
+                Some(got) => attr_matches(op, got, value)
+                None      => false
+        CssPseudoClass(kind)     => pseudo_matches(doc, index, kind)
 
 // The first node under `from` that matches, in document order, or
 // `htmltree.NO_NODE`.
@@ -131,7 +387,10 @@ pub fn matches_simple(doc: htmltree.HtmlDoc, index: Int, simple: cssparse.CssSim
 //         Ok(selector) => println("${cssmatch.select(doc, htmltree.root(doc), selector)}")
 // ```
 pub fn select(doc: htmltree.HtmlDoc, from: Int, selector: cssparse.CssSelector) -> Int []
-    todo("css-select-nv.cssmatch.select")
+    for i in nodes_from(doc, from)
+        if matches(doc, i, selector)
+            return i
+    htmltree.NO_NODE
 
 // Every node under `from` that matches, in document order.
 //
@@ -153,7 +412,13 @@ pub fn select(doc: htmltree.HtmlDoc, from: Int, selector: cssparse.CssSelector) 
 //             println("${list.len(cssmatch.select_all(doc, htmltree.root(doc), selector))}")
 // ```
 pub fn select_all(doc: htmltree.HtmlDoc, from: Int, selector: cssparse.CssSelector) -> [Int] []
-    todo("css-select-nv.cssmatch.select_all")
+    // A node is tested once whatever the alternatives do, so a node
+    // matching two of them is one entry and not two.
+    var out: [Int] = []
+    for i in nodes_from(doc, from)
+        if matches(doc, i, selector)
+            out = list.push(out, i)
+    out
 
 // The nearest node at or above `index` that matches, or
 // `htmltree.NO_NODE`.
@@ -174,7 +439,14 @@ pub fn select_all(doc: htmltree.HtmlDoc, from: Int, selector: cssparse.CssSelect
 //         Ok(selector) => println("${cssmatch.closest(doc, 2, selector)}")
 // ```
 pub fn closest(doc: htmltree.HtmlDoc, index: Int, selector: cssparse.CssSelector) -> Int []
-    todo("css-select-nv.cssmatch.closest")
+    // Upwards through every node and not only every element, so a
+    // caller holding a text node gets an answer rather than nothing.
+    var i = index
+    while i != htmltree.NO_NODE
+        if matches(doc, i, selector)
+            return i
+        i = parent_of(doc, i)
+    htmltree.NO_NODE
 
 // The first `count` nodes under `from` that match, in document order.
 //
@@ -197,7 +469,18 @@ pub fn closest(doc: htmltree.HtmlDoc, index: Int, selector: cssparse.CssSelector
 // ```
 pub fn select_first(doc: htmltree.HtmlDoc, from: Int, selector: cssparse.CssSelector,
                     count: Int) -> [Int] []
-    todo("css-select-nv.cssmatch.select_first")
+    // The walk stops at the count, which is the whole point of the
+    // function: a caller wanting ten rows of a huge table does not
+    // want the walk that finds the rest.
+    var out: [Int] = []
+    if count <= 0
+        return out
+    for i in nodes_from(doc, from)
+        if matches(doc, i, selector)
+            out = list.push(out, i)
+            if list.len(out) >= count
+                return out
+    out
 
 // Which alternative of a selector matched a node, as its index in
 // `alternatives`, or `-1`.
@@ -219,7 +502,15 @@ pub fn select_first(doc: htmltree.HtmlDoc, from: Int, selector: cssparse.CssSele
 // ```
 pub fn matching_alternative(doc: htmltree.HtmlDoc, index: Int,
                             selector: cssparse.CssSelector) -> Int []
-    todo("css-select-nv.cssmatch.matching_alternative")
+    // The first alternative that matches, which is the one `matches`
+    // would have answered true for and is the one whose specificity
+    // a cascade would use.  No alternative matching is minus one.
+    var k = 0
+    for alternative in selector.alternatives
+        if matches_complex(doc, index, alternative)
+            return k
+        k = k + 1
+    0 - 1
 
 // A node's position among its element siblings, counting from one.
 //
@@ -238,7 +529,17 @@ pub fn matching_alternative(doc: htmltree.HtmlDoc, index: Int,
 //     println("${cssmatch.child_position(doc, 2)}")
 // ```
 pub fn child_position(doc: htmltree.HtmlDoc, index: Int) -> Int []
-    todo("css-select-nv.cssmatch.child_position")
+    // Counting backwards from the node, because the list of children
+    // is not held anywhere and stepping to the previous element is
+    // what both this and `:nth-child` already do.
+    if not is_element(doc, index)
+        return 0
+    var pos = 1
+    var k = previous_element(doc, index)
+    while k != htmltree.NO_NODE
+        pos = pos + 1
+        k = previous_element(doc, k)
+    pos
 
 // A node's position among the element siblings with the same tag,
 // counting from one.
@@ -254,7 +555,18 @@ pub fn child_position(doc: htmltree.HtmlDoc, index: Int) -> Int []
 //     println("${cssmatch.type_position(doc, 4)}")
 // ```
 pub fn type_position(doc: htmltree.HtmlDoc, index: Int) -> Int []
-    todo("css-select-nv.cssmatch.type_position")
+    // An element of a different tag is not counted, which is the
+    // whole difference between this and `child_position`.
+    if not is_element(doc, index)
+        return 0
+    let want = htmltree.tag_name(doc, index)
+    var pos = 1
+    var k = previous_element(doc, index)
+    while k != htmltree.NO_NODE
+        if htmltree.tag_name(doc, k) == want
+            pos = pos + 1
+        k = previous_element(doc, k)
+    pos
 
 // How many element siblings a node has, including itself.
 //
@@ -270,4 +582,19 @@ pub fn type_position(doc: htmltree.HtmlDoc, index: Int) -> Int []
 //     println("${cssmatch.sibling_count(doc, 2)}")
 // ```
 pub fn sibling_count(doc: htmltree.HtmlDoc, index: Int) -> Int []
-    todo("css-select-nv.cssmatch.sibling_count")
+    // The whole count, on both sides, which is why it is a function of
+    // its own: turning it into a count from the end is what
+    // `:nth-last-child` is, and counting only forward would give that
+    // pseudo-class the wrong end.
+    if not is_element(doc, index)
+        return 0
+    var n = 1
+    var k = previous_element(doc, index)
+    while k != htmltree.NO_NODE
+        n = n + 1
+        k = previous_element(doc, k)
+    var j = next_element(doc, index)
+    while j != htmltree.NO_NODE
+        n = n + 1
+        j = next_element(doc, j)
+    n

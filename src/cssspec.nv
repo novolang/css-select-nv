@@ -24,7 +24,7 @@
 //
 // A selector list has no specificity of its own: each alternative has
 // one, and the one that matched is the one that counts.  So
-// `specificity_of` takes a `CssComplex` and the selector-level call
+// `of_complex` takes a `CssComplex` and the selector-level call
 // answers the largest, which is what a caller ranking a whole rule
 // wants and is what the cascade would use if every alternative
 // matched.
@@ -59,7 +59,7 @@ pub struct CssSpecificity
 //     println("${cssspec.zero().ids}")
 // ```
 pub fn zero() -> CssSpecificity []
-    todo("css-select-nv.cssspec.zero")
+    CssSpecificity { ids: 0, classes: 0, types: 0 }
 
 // The specificity of one alternative.
 //
@@ -73,7 +73,33 @@ pub fn zero() -> CssSpecificity []
 //         Err(fault)  => println(fault.message())
 // ```
 pub fn of_complex(complex: cssparse.CssComplex) -> CssSpecificity []
-    todo("css-select-nv.cssspec.of_complex")
+    var total = zero()
+    for compound in complex.compounds
+        total = plus(total, of_compound(compound))
+    total
+
+// Two specificities added, count by count.  A run of compounds is
+// worth what its parts are worth together, and section 9 adds them
+// rather than combining them in any other way.
+fn plus(a: CssSpecificity, b: CssSpecificity) -> CssSpecificity
+    CssSpecificity { ids: a.ids + b.ids, classes: a.classes + b.classes, types: a.types + b.types }
+
+// The counts one simple selector adds.  A pseudo-element would add to
+// the third count, and none of them reaches here: they do not parse.
+fn of_simple(simple: cssparse.CssSimple) -> CssSpecificity
+    match simple
+        CssUniversal      => zero()
+        CssType(_, _)     => CssSpecificity { ids: 0, classes: 0, types: 1 }
+        CssId(_)          => CssSpecificity { ids: 1, classes: 0, types: 0 }
+        CssClass(_)       => CssSpecificity { ids: 0, classes: 1, types: 0 }
+        CssAttr(_, _, _)  => CssSpecificity { ids: 0, classes: 1, types: 0 }
+        CssPseudoClass(_) => CssSpecificity { ids: 0, classes: 1, types: 0 }
+
+// Every simple selector a compound carries, the negated ones after the
+// positive ones, because section 9 counts the contents of a `:not()`
+// as though they stood where it stands.
+fn all_simples(compound: cssparse.CssCompound) -> [cssparse.CssSimple]
+    list.concat(compound.simples, compound.negations)
 
 // The specificity of one compound selector.
 //
@@ -91,7 +117,10 @@ pub fn of_complex(complex: cssparse.CssComplex) -> CssSpecificity []
 //         Err(fault)  => println(fault.message())
 // ```
 pub fn of_compound(compound: cssparse.CssCompound) -> CssSpecificity []
-    todo("css-select-nv.cssspec.of_compound")
+    var total = zero()
+    for simple in all_simples(compound)
+        total = plus(total, of_simple(simple))
+    total
 
 // The highest specificity among a selector's alternatives.
 //
@@ -109,7 +138,20 @@ pub fn of_compound(compound: cssparse.CssCompound) -> CssSpecificity []
 //         Err(fault)   => println(fault.message())
 // ```
 pub fn of_selector(selector: cssparse.CssSelector) -> CssSpecificity []
-    todo("css-select-nv.cssspec.of_selector")
+    var best = zero()
+    for alternative in selector.alternatives
+        let s = of_complex(alternative)
+        if compare(s, best) > 0
+            best = s
+    best
+
+// Which of two counts is the larger, as `-1`, `0` or `1`.
+fn order(a: Int, b: Int) -> Int
+    if a > b
+        return 1
+    if a < b
+        return 0 - 1
+    0
 
 // Which of two specificities wins: `-1`, `0` or `1`.
 //
@@ -125,7 +167,11 @@ pub fn of_selector(selector: cssparse.CssSelector) -> CssSpecificity []
 //     println("${cssspec.compare(cssspec.zero(), cssspec.zero())}")
 // ```
 pub fn compare(a: CssSpecificity, b: CssSpecificity) -> Int []
-    todo("css-select-nv.cssspec.compare")
+    if a.ids != b.ids
+        return order(a.ids, b.ids)
+    if a.classes != b.classes
+        return order(a.classes, b.classes)
+    order(a.types, b.types)
 
 // The three counts as `"a,b,c"`: `"1,2,0"`.
 //
@@ -139,7 +185,7 @@ pub fn compare(a: CssSpecificity, b: CssSpecificity) -> Int []
 //     println(cssspec.specificity_text(cssspec.zero()))
 // ```
 pub fn specificity_text(s: CssSpecificity) -> Str []
-    todo("css-select-nv.cssspec.specificity_text")
+    "${s.ids},${s.classes},${s.types}"
 
 // Whether a selector reaches further than it needs to, by a threshold
 // a caller sets.
@@ -160,4 +206,8 @@ pub fn specificity_text(s: CssSpecificity) -> Str []
 //         Err(fault)   => println(fault.message())
 // ```
 pub fn is_over(selector: cssparse.CssSelector, max_ids: Int, max_classes: Int) -> Bool []
-    todo("css-select-nv.cssspec.is_over")
+    // The type count is deliberately not a threshold: a rule that
+    // names twenty tags is not the kind of selector a linter is
+    // looking for, and a caller who wants that can compare it itself.
+    let s = of_selector(selector)
+    s.ids > max_ids or s.classes > max_classes

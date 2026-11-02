@@ -1,11 +1,9 @@
 // cssmatch_tests.nv — a parsed selector against html-nv's tree.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// css-select-nv.cssmatch.<fn>` or a function it calls.  What is
-// asserted is that the structural pseudo-classes count only element
-// siblings, that a combinator is answered by walking upwards, and that
-// a node appears once in a result however many alternatives it
-// matched.
+// What is asserted is that the structural pseudo-classes count only
+// element siblings, that a combinator is answered by walking upwards,
+// and that a node appears once in a result however many alternatives
+// it matched.
 
 use std.test
 use cssmatch

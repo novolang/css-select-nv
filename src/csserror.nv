@@ -80,7 +80,14 @@ pub enum CssUnsupported
 //     println(csserror.unsupported_name(CssPseudoElement))
 // ```
 pub fn unsupported_name(u: CssUnsupported) -> Str []
-    todo("css-select-nv.csserror.unsupported_name")
+    match u
+        CssLevel4Logical    => ":is(), :where(), :has()"
+        CssLevel4NthOf      => ":nth-child(An+B of S)"
+        CssLevel4AttrFlags  => "[attr=value i], [attr=value s]"
+        CssLevel4Linguistic => ":dir(), :any-link, and the later :lang() forms"
+        CssStatePseudoClass => ":hover, :focus, :active, :checked, :disabled, :enabled, :target, :visited"
+        CssPseudoElement    => "::before, ::after, ::first-line, ::first-letter"
+        CssNamespacePrefix  => "a namespace prefix, as in svg|rect"
 
 // Why it is not here, in one sentence.
 //
@@ -96,7 +103,14 @@ pub fn unsupported_name(u: CssUnsupported) -> Str []
 //     println(csserror.unsupported_reason(CssStatePseudoClass))
 // ```
 pub fn unsupported_reason(u: CssUnsupported) -> Str []
-    todo("css-select-nv.csserror.unsupported_reason")
+    match u
+        CssLevel4Logical    => "Selectors Level 4: :is(), :where() and :has() are a later level than the one this package implements."
+        CssLevel4NthOf      => "Selectors Level 4: the `of S` filter that counts only the siblings a selector matches is a later level."
+        CssLevel4AttrFlags  => "Selectors Level 4: the `i` and `s` flags that set the case-sensitivity of an attribute value are a later level."
+        CssLevel4Linguistic => "The linguistic and link pseudo-classes: this package implements the structural ones, and the rest are a later level."
+        CssStatePseudoClass => "A parsed tree has no state: nothing in it is hovered, focused, active, checked, enabled or visited."
+        CssPseudoElement    => "A pseudo-element is not a node in the document, so there is nothing for a matcher to answer about."
+        CssNamespacePrefix  => "html-nv's tree records no namespace for a node, so there is nothing to compare a prefix against."
 
 // A short stable code for a log or a metric label: `"level4_logical"`,
 // `"pseudo_element"`, and the rest.
@@ -108,7 +122,20 @@ pub fn unsupported_reason(u: CssUnsupported) -> Str []
 //     println(csserror.unsupported_code(CssNamespacePrefix))
 // ```
 pub fn unsupported_code(u: CssUnsupported) -> Str []
-    todo("css-select-nv.csserror.unsupported_code")
+    match u
+        CssLevel4Logical    => "level4_logical"
+        CssLevel4NthOf      => "level4_nth_of"
+        CssLevel4AttrFlags  => "level4_attr_flags"
+        CssLevel4Linguistic => "level4_linguistic"
+        CssStatePseudoClass => "state_pseudo_class"
+        CssPseudoElement    => "pseudo_element"
+        CssNamespacePrefix  => "namespace_prefix"
+
+// Whether a name is one of a family's spellings.  A table read in one
+// place, because the three reasons are what a caller branches on and a
+// name filed under the wrong one is a user sent to the wrong page.
+fn listed(name: Str, names: [Str]) -> Bool
+    list.contains(names, name)
 
 // Which entry a pseudo-class or pseudo-element name falls under, or
 // `None` when the name is one this package implements.
@@ -129,7 +156,31 @@ pub fn unsupported_code(u: CssUnsupported) -> Str []
 //         None        => println("implemented, or not a name at all")
 // ```
 pub fn unsupported_for(name: Str) -> ?CssUnsupported []
-    todo("css-select-nv.csserror.unsupported_for")
+    // The catalogue is four tables rather than one, because a name
+    // reaching the wrong reason is a reader sent to the wrong place: a
+    // Level 4 selector has an answer in a later version and a state
+    // pseudo-class never will.  The order is the one the reasons are
+    // introduced in, so the first match is the closest reason.
+    if listed(name, ["is", "where", "has", "matches", "scope", "current",
+                     "past", "future", "host", "host-context", "nth-col",
+                     "nth-last-col", "target-within"])
+        return Some(CssLevel4Logical)
+    if listed(name, ["hover", "focus", "active", "checked", "disabled",
+                     "enabled", "target", "visited", "link", "focus-within",
+                     "focus-visible", "valid", "invalid", "in-range",
+                     "out-of-range", "required", "optional", "read-only",
+                     "read-write", "placeholder-shown", "default",
+                     "indeterminate", "blank", "fullscreen", "modal",
+                     "picture-in-picture", "playing", "paused", "autofill",
+                     "user-valid", "user-invalid"])
+        return Some(CssStatePseudoClass)
+    if listed(name, ["before", "after", "first-line", "first-letter",
+                     "selection", "marker", "backdrop",
+                     "file-selector-button", "cue", "part", "slotted"])
+        return Some(CssPseudoElement)
+    if listed(name, ["dir", "lang", "any-link", "local-link"])
+        return Some(CssLevel4Linguistic)
+    None
 
 // Why a selector would not compile.
 //
@@ -170,14 +221,28 @@ pub enum CssFault
     // A combinator with nothing on one side of it: `"> p"`, `"a >"`.
     CssDanglingCombinator(at: Int)
 
+// The byte a fault names, as a message spells it.  The end of the
+// selector is a position a scan reaches, so `-1` is said and not shown.
+fn byte_shown(ch: Int) -> Str
+    if ch < 0
+        return "the end of the selector"
+    "'" + str.from_byte(ch) + "'"
+
 // `CssFault` is an `Error`, which is what lets `Result<T, CssFault>`
 // exist at all (SPEC section 3.4).
 impl Error for CssFault
     // The one-line message, naming what was written and where.
-    //
-    // Panics with `not implemented` until the bodies land.
     fn message(self) -> Str
-        todo("css-select-nv.CssFault.message")
+        match self
+            CssUnexpected(at, ch)          => "at ${at}: " + byte_shown(ch) + " cannot stand here"
+            CssUnclosed(at, opener)        => "at ${at}: " + str.from_byte(opener) + " is never closed"
+            CssEmptySelector(at)           => "at ${at}: an empty selector"
+            CssBadOperator(at, op)         => "at ${at}: `${op}` is not an attribute operator"
+            CssNotImplemented(at, name, u) => "at ${at}: `${name}` is not implemented: " + unsupported_reason(u)
+            CssUnknownPseudo(at, name)     => "at ${at}: `${name}` is not a pseudo-class"
+            CssBadNth(at, text)            => "at ${at}: `${text}` is not an an+b expression"
+            CssBadNegation(at)             => "at ${at}: :not() takes exactly one simple selector"
+            CssDanglingCombinator(at)      => "at ${at}: a combinator has a compound on both sides"
 
 // The byte offset in the selector the fault is about.
 //
@@ -191,7 +256,16 @@ impl Error for CssFault
 //     println("${csserror.offset(CssEmptySelector(3))}")
 // ```
 pub fn offset(f: CssFault) -> Int []
-    todo("css-select-nv.csserror.offset")
+    match f
+        CssUnexpected(at, _)        => at
+        CssUnclosed(at, _)          => at
+        CssEmptySelector(at)        => at
+        CssBadOperator(at, _)       => at
+        CssNotImplemented(at, _, _) => at
+        CssUnknownPseudo(at, _)     => at
+        CssBadNth(at, _)            => at
+        CssBadNegation(at)          => at
+        CssDanglingCombinator(at)   => at
 
 // A short stable code for a log or a metric label: `"unexpected"`,
 // `"not_implemented"`, `"bad_nth"`, and the rest.
@@ -203,7 +277,16 @@ pub fn offset(f: CssFault) -> Int []
 //     println(csserror.code(CssBadNth(6, "2n+")))
 // ```
 pub fn code(f: CssFault) -> Str []
-    todo("css-select-nv.csserror.code")
+    match f
+        CssUnexpected(_, _)        => "unexpected"
+        CssUnclosed(_, _)          => "unclosed"
+        CssEmptySelector(_)        => "empty_selector"
+        CssBadOperator(_, _)       => "bad_operator"
+        CssNotImplemented(_, _, _) => "not_implemented"
+        CssUnknownPseudo(_, _)     => "unknown_pseudo"
+        CssBadNth(_, _)            => "bad_nth"
+        CssBadNegation(_)          => "bad_negation"
+        CssDanglingCombinator(_)   => "dangling_combinator"
 
 // Whether the selector is valid CSS that this package does not
 // implement, rather than something that is not a selector at all.
@@ -221,7 +304,9 @@ pub fn code(f: CssFault) -> Str []
 //     println("${csserror.is_unimplemented(CssUnknownPseudo(1, "hovr"))}")
 // ```
 pub fn is_unimplemented(f: CssFault) -> Bool []
-    todo("css-select-nv.csserror.is_unimplemented")
+    match f
+        CssNotImplemented(_, _, _) => true
+        _                          => false
 
 // A caret line for a diagnostic: the selector, a newline, and spaces
 // up to the fault's offset followed by a `^`.
@@ -236,4 +321,4 @@ pub fn is_unimplemented(f: CssFault) -> Bool []
 //     println(csserror.caret("a >", CssDanglingCombinator(2)))
 // ```
 pub fn caret(selector: Str, f: CssFault) -> Str []
-    todo("css-select-nv.csserror.caret")
+    selector + "\n" + str.repeat(" ", offset(f)) + "^"

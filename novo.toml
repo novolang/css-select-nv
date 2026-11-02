@@ -1,15 +1,10 @@
 [package]
 name        = "css-select-nv"
-version     = "0.0.2"
+version     = "0.1.0"
 description = "Selectors Level 3 in full, parsed once into a value a caller can read: the type, universal, id, class and attribute selectors, the four combinators, every structural pseudo-class including the an+b micro-syntax, and `:not()` — matched against html-nv's tree, with specificity computed and Level 4 named as left out."
 license     = "Apache-2.0"
 
-# An INTERFACE release: every `pub fn` body is a `todo()`, so the
-# signatures and the effect rows are published and nothing is
-# implemented.  `novo pkg publish` recognises the shape and requires
-# both the draft stability and the 0.0.x version; the first
-# implementation is the 0.1.0 published over it.
-stability   = "draft"
+stability   = "experimental"
 
 # `core`.  A selector is parsed from a string the caller holds and
 # matched against a tree the caller holds.  Nothing is fetched: a
@@ -22,7 +17,7 @@ category    = "web"
 tags        = ["css", "selectors", "css-selectors", "level-3", "scraping", "dom", "html", "web"]
 repository  = "https://github.com/novolang/css-select-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.9.0"
+novo        = ">= 0.20.2"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.

@@ -1,0 +1,42 @@
+// hostile_tests.nv — selectors with numbers as large as an Int allows
+// and with nesting a few hundred kilobytes deep.
+
+use std.test
+use cssparse
+
+fn refused(r: Result<CssSelector, CssFault>) -> Bool []
+    match r
+        Err(_) => true
+        Ok(_)  => false
+
+@test
+fn test_huge_an_plus_b_numbers_do_not_overflow() [io]
+    test.case("an offset past 64 bits parses as a large position")
+    match cssparse.parse_nth("2n+99999999999999999999999")
+        Ok(nth) => test.assert(not cssparse.nth_matches(nth, 3))
+        Err(_)  => test.assert(false)
+    test.case("a negative offset at the limit of an Int")
+    let hand = CssNth { step: 2, offset: 0 - 9223372036854775807 }
+    let _ = cssparse.nth_matches(hand, 3)
+    test.case("a step and an offset in the selector")
+    test.assert(not refused(cssparse.parse("li:nth-child(-n+9223372036854775807)")))
+    test.assert(not refused(cssparse.parse("li:nth-child(2n-9223372036854775807)")))
+    test.case("an honest series still matches")
+    match cssparse.parse_nth("2n+1")
+        Ok(nth) =>
+            test.assert(cssparse.nth_matches(nth, 3))
+            test.assert(not cssparse.nth_matches(nth, 4))
+        Err(_)  => test.assert(false)
+
+@test
+fn test_deep_nesting_is_refused() [io]
+    test.case("nested negations")
+    test.assert(refused(cssparse.parse(":not(".repeat(100000) + "a" + ")".repeat(100000))))
+    test.case("nested :is")
+    test.assert(refused(cssparse.parse(":is(".repeat(100000) + "a" + ")".repeat(100000))))
+    test.case("nested :where")
+    test.assert(refused(cssparse.parse(":where(".repeat(100000) + "a" + ")".repeat(100000))))
+    test.case("nested :has")
+    test.assert(refused(cssparse.parse(":has(".repeat(100000) + "a" + ")".repeat(100000))))
+    test.case("a long descendant chain parses")
+    test.assert(not refused(cssparse.parse("a ".repeat(50000) + "b")))

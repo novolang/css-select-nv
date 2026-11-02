@@ -1,0 +1,559 @@
+// css_select_edge_tests.nv — the corners the API suite does not reach:
+// escapes, namespace prefixes, every attribute form, the refusals of
+// the an+b micro-syntax, and the counts the matcher answers.
+//
+// The API suite is the published oracle and is not edited, so what the
+// parser and the matcher do at a corner is asserted here instead.
+
+use std.test
+use cssparse
+use csserror
+use cssmatch
+use htmlparse
+use htmltree
+
+// A parsed selector, or one with no alternatives when the text does
+// not parse: the tests that mean to assert a refusal parse it again
+// themselves rather than reading it out of this.
+fn compiled(text: Str) -> cssparse.CssSelector
+    match cssparse.parse(text)
+        Ok(selector) => selector
+        Err(_)       => CssSelector { source: text, alternatives: [] }
+
+// The class names of one parsed selector, which is how a decoded
+// escape is read without walking the tree at every call site.
+fn classes_of(text: Str) -> [Str]
+    match cssparse.parse(text)
+        Ok(selector) => cssparse.class_names(selector)
+        Err(_)       => []
+
+// How many nodes of a document a selector matches, the one number most
+// of the matcher tests are about.
+fn count_of(doc: htmltree.HtmlDoc, text: Str) -> Int
+    list.len(cssmatch.select_all(doc, htmltree.root(doc), compiled(text)))
+
+// The document the matcher tests run against: two list items on either
+// side of a comment and a run of text, with a paragraph after the list.
+fn page() -> htmltree.HtmlDoc
+    htmlparse.parse("<main><ul class=\"row\"><li>a</li><!-- c --><li class=\"on\">b</li>text<li>c</li></ul><p>tail</p></main>")
+
+@test
+fn test_an_escape_is_decoded_the_way_section_10_2_says() [io]
+    // A hex escape names a code point and swallows one whitespace byte
+    // after it; any other escaped byte stands for itself.
+    test.case("a hex escape, the space that ends it, and the digits after it")
+    let spaced = classes_of(".\\31 23")
+    test.assert(list.len(spaced) == 1)
+    test.assert(spaced[0] == "123")
+
+    test.case("one that begins the name")
+    let started = classes_of(".\\61 bc")
+    test.assert(started[0] == "abc")
+
+    test.case("a literal escape is the byte after its backslash")
+    let literal = classes_of(".a\\z")
+    test.assert(literal[0] == "az")
+
+    test.case("a carriage return and a line feed end one together")
+    let crlf = classes_of(".\\31\r\n23")
+    test.assert(crlf[0] == "123")
+
+    test.case("and a hex escape of zero is the replacement character")
+    let zero = classes_of(".\\0x")
+    test.assert(str.len(zero[0]) == 4)
+    test.assert(str.starts_with(zero[0], "\u{FFFD}"))
+
+    test.case("and a hex digit may be written in either case")
+    let upper = classes_of(".\\4A")
+    test.assert(upper[0] == "J")
+    let lower = classes_of(".\\6a")
+    test.assert(lower[0] == "j")
+
+    test.case("a backslash with nothing after it begins no name")
+    match cssparse.parse(".\\")
+        Ok(_)      => test.fail("that backslash escapes nothing")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("and one at the end of a name is not part of it")
+    match cssparse.parse(".a\\")
+        Ok(_)      => test.fail("that backslash escapes nothing")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+@test
+fn test_a_namespace_prefix_is_read_apart_from_a_dash_match() [io]
+    // `[lang|=en]` and `svg|rect` begin the same way, and only the
+    // second is a namespace.
+    test.case("a dash-match is an operator and not a prefix")
+    test.assert(cssparse.is_valid("[lang|=en]"))
+
+    test.case("any namespace, on a type and on an attribute")
+    match cssparse.parse("*|div")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.assert(cssparse.selector_text(selector) == "*|div")
+    match cssparse.parse("[*|href]")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.assert(cssparse.selector_text(selector) == "[href]")
+
+    test.case("and a universal under a universal is still the universal")
+    match cssparse.parse("*|*")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.assert(cssparse.selector_text(selector) == "*")
+
+    test.case("no namespace, which is what a name with no prefix means")
+    match cssparse.parse("|div")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.assert(cssparse.selector_text(selector) == "div")
+    match cssparse.parse("[|href]")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.assert(cssparse.selector_text(selector) == "[href]")
+
+    test.case("a bar with nothing after it")
+    match cssparse.parse("*|")
+        Ok(_)      => test.fail("that prefix has no name after it")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("a named prefix is refused, because the tree holds no namespace")
+    match cssparse.parse("svg|rect")
+        Ok(_)      => test.fail("the tree records no namespace")
+        Err(fault) => test.assert(csserror.code(fault) == "not_implemented")
+    match cssparse.parse("[svg|href]")
+        Ok(_)      => test.fail("the tree records no namespace")
+        Err(fault) => test.assert(csserror.code(fault) == "not_implemented")
+
+@test
+fn test_an_attribute_selector_reads_its_value_in_every_form() [io]
+    test.case("a value with no quotes at all is an identifier")
+    match cssparse.parse("[href=a]")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.assert(cssparse.selector_text(selector) == "[href=\"a\"]")
+
+    test.case("and a byte that cannot begin an identifier is not one")
+    match cssparse.parse("[href=/a]")
+        Ok(_)      => test.fail("that is not an identifier")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("a quoted value decodes the escapes inside it")
+    match cssparse.parse("[href=\"a\\62 c\"]")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.assert(cssparse.selector_text(selector) == "[href=\"abc\"]")
+
+    test.case("a backslash that escapes a line feed is one literal backslash")
+    match cssparse.parse_one("[href=\"a\\\n\"]")
+        Err(fault)  => test.fail(fault.message())
+        Ok(complex) =>
+            match complex.compounds[0].simples[0]
+                CssAttr(_, _, value) => test.assert(str.len(value) == 3)
+                _                    => test.fail("that is an attribute selector")
+
+@test
+fn test_an_attribute_selector_that_is_not_one_is_refused() [io]
+    test.case("an empty one says where the name should be")
+    match cssparse.parse("[]")
+        Ok(_)      => test.fail("that attribute has no name")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("one that is never closed names its bracket")
+    match cssparse.parse("[")
+        Ok(_)      => test.fail("that bracket is never closed")
+        Err(fault) => test.assert(csserror.code(fault) == "unclosed")
+
+    test.case("a value that is not there at all")
+    match cssparse.parse("[href=")
+        Ok(_)      => test.fail("that attribute has no value")
+        Err(fault) => test.assert(csserror.code(fault) == "unclosed")
+
+    test.case("and one that begins with a byte no value may hold")
+    match cssparse.parse("[href=!]")
+        Ok(_)      => test.fail("that is not a value")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("a quote that is never closed points at the quote")
+    match cssparse.parse("[href=\"a]")
+        Ok(_)      => test.fail("that quote is never closed")
+        Err(fault) =>
+            test.assert(csserror.code(fault) == "unclosed")
+            test.assert(csserror.offset(fault) == 6)
+
+    test.case("an operator that is not one of the seven is named as written")
+    match cssparse.parse("[href! /a]")
+        Ok(_)      => test.fail("there are seven operators")
+        Err(fault) =>
+            test.assert(csserror.code(fault) == "bad_operator")
+            test.assert(str.contains(fault.message(), "!"))
+
+    test.case("a stray bar and a star that is not a prefix")
+    match cssparse.parse("[*]")
+        Ok(_)      => test.fail("that is not an attribute name")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("the case flags of Level 4 are named, not called syntax")
+    match cssparse.parse("[href=\"/a\" i]")
+        Ok(_)      => test.fail("the i flag is Level 4")
+        Err(fault) => test.assert(csserror.code(fault) == "not_implemented")
+
+    test.case("and something after the flag that is neither")
+    match cssparse.parse("[href=\"/a\" i x]")
+        Ok(_)      => test.fail("that is not the end of the attribute")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+    match cssparse.parse("[href=\"/a\" x]")
+        Ok(_)      => test.fail("that is not the end of the attribute")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+    match cssparse.parse("[href=\"/a\"")
+        Ok(_)      => test.fail("that bracket is never closed")
+        Err(fault) => test.assert(csserror.code(fault) == "unclosed")
+
+@test
+fn test_the_structural_pseudo_classes_and_the_refusals_beside_them() [io]
+    test.case("the four -of-type forms")
+    test.assert(cssparse.is_valid("p:first-of-type"))
+    test.assert(cssparse.is_valid("p:last-of-type"))
+    test.assert(cssparse.is_valid("p:only-of-type"))
+    test.assert(cssparse.is_valid("p:nth-of-type(2)"))
+    test.assert(cssparse.is_valid("p:nth-last-of-type(2)"))
+    test.assert(cssparse.is_valid("p:nth-last-child(2)"))
+
+    test.case("whitespace is allowed around the sign of the offset")
+    test.assert(cssparse.is_valid("p:nth-child(2n + 1)"))
+
+    test.case("the Level 4 `of` filter is named rather than called syntax")
+    match cssparse.parse("p:nth-child(2n of li)")
+        Ok(_)      => test.fail("that filter is Level 4")
+        Err(fault) => test.assert(csserror.code(fault) == "not_implemented")
+
+    test.case("a body that is not there at all")
+    match cssparse.parse("p:nth-child")
+        Ok(_)      => test.fail("that pseudo-class takes a body")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("and one whose parenthesis is never closed")
+    match cssparse.parse("p:nth-child(2n+1")
+        Ok(_)      => test.fail("that parenthesis is never closed")
+        Err(fault) => test.assert(csserror.code(fault) == "unclosed")
+
+    test.case("the four pseudo-elements Level 3 lets write one colon")
+    test.assert(not cssparse.is_valid("p:before"))
+    test.assert(not cssparse.is_valid("p:after"))
+    test.assert(not cssparse.is_valid("p:first-line"))
+    test.assert(not cssparse.is_valid("p:first-letter"))
+
+    test.case("and a colon with no name after it")
+    test.assert(not cssparse.is_valid("p:"))
+    test.assert(not cssparse.is_valid("p::"))
+
+@test
+fn test_the_argument_of_not_is_exactly_one_simple_selector() [io]
+    test.case("a type, an id, a universal and a pseudo-class")
+    test.assert(cssparse.is_valid("a:not(p)"))
+    test.assert(cssparse.is_valid("a:not(#main)"))
+    test.assert(cssparse.is_valid("a:not(*)"))
+    test.assert(cssparse.is_valid("a:not(:first-child)"))
+
+    test.case("a second colon inside is Level 4")
+    match cssparse.parse("a:not(::before)")
+        Ok(_)      => test.fail("Level 3 admits one simple selector")
+        Err(fault) => test.assert(csserror.code(fault) == "bad_negation")
+
+    test.case("a colon with no name, a nested :not(), and nothing at all")
+    test.assert(not cssparse.is_valid("a:not(:)"))
+    test.assert(not cssparse.is_valid("a:not(:not(p))"))
+    test.assert(not cssparse.is_valid("a:not()"))
+
+    test.case("one that is never closed, and one with no parentheses")
+    match cssparse.parse("a:not(p")
+        Ok(_)      => test.fail("that parenthesis is never closed")
+        Err(fault) => test.assert(csserror.code(fault) == "unclosed")
+    match cssparse.parse("a:not")
+        Ok(_)      => test.fail(":not() takes an argument")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("a compound whose positive part is only implied")
+    match cssparse.parse_one(":not(.x)")
+        Err(fault)  => test.fail(fault.message())
+        Ok(complex) =>
+            let compound = complex.compounds[0]
+            test.assert(list.len(compound.simples) == 1)
+            test.assert(list.len(compound.negations) == 1)
+
+    test.case("and a combinator with nothing before it")
+    match cssparse.parse("> p")
+        Ok(_)      => test.fail("that combinator has nothing before it")
+        Err(fault) => test.assert(csserror.code(fault) == "dangling_combinator")
+
+@test
+fn test_a_selector_that_is_not_one_is_refused_where_it_stops_being_one() [io]
+    test.case("a comma with a compound on neither side")
+    match cssparse.parse(",")
+        Ok(_)      => test.fail("that comma joins nothing")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("a byte inside a compound that is not part of one")
+    match cssparse.parse(".a)")
+        Ok(_)      => test.fail("that byte cannot stand there")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("one alternative asked for, and a comma is not one")
+    match cssparse.parse_one("a,")
+        Ok(_)      => test.fail("parse_one takes exactly one alternative")
+        Err(fault) => test.assert(csserror.code(fault) == "unexpected")
+
+    test.case("and the cheap question answers false rather than panicking")
+    test.assert(not cssparse.is_valid("a > "))
+
+@test
+fn test_the_an_plus_b_microsyntax_refuses_what_it_does_not_admit() [io]
+    test.case("a body that is neither a keyword, a number nor an n")
+    match cssparse.parse_nth("x")
+        Ok(_)      => test.fail("that is not an an+b expression")
+        Err(fault) => test.assert(csserror.code(fault) == "bad_nth")
+
+    test.case("digits that do not stand alone")
+    match cssparse.parse_nth("3 x")
+        Ok(_)      => test.fail("that is not an an+b expression")
+        Err(fault) => test.assert(csserror.code(fault) == "bad_nth")
+
+    test.case("an offset that is not a number")
+    match cssparse.parse_nth("2n+")
+        Ok(_)      => test.fail("that is not an an+b expression")
+        Err(fault) => test.assert(csserror.code(fault) == "bad_nth")
+
+    test.case("and one followed by something else")
+    match cssparse.parse_nth("2n+1 x")
+        Ok(_)      => test.fail("that is not an an+b expression")
+        Err(fault) => test.assert(csserror.code(fault) == "bad_nth")
+
+    test.case("a negative offset written after the n")
+    match cssparse.parse_nth("2n-1")
+        Ok(nth)    =>
+            test.assert(nth.step == 2)
+            test.assert(nth.offset == 0 - 1)
+        Err(fault) => test.fail(fault.message())
+
+    test.case("and a bare negative position")
+    match cssparse.parse_nth("-3")
+        Ok(nth)    =>
+            test.assert(nth.step == 0)
+            test.assert(nth.offset == 0 - 3)
+        Err(fault) => test.fail(fault.message())
+
+@test
+fn test_the_canonical_spelling_of_every_shape() [io]
+    test.case("a negation prints inside its parentheses")
+    match cssparse.parse("a:not(.x)")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.assert(cssparse.selector_text(selector) == "a:not(.x)")
+
+    test.case("an attribute value prints in double quotes whatever it holds")
+    match cssparse.parse("[title='say \"hi\"']")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            test.assert(cssparse.selector_text(selector)
+                        == "[title=\"say \\\"hi\\\"\"]")
+
+    test.case("a namespace on a value a caller built by hand")
+    test.assert(cssparse.simple_text(CssType("rect", "*")) == "*|rect")
+    test.assert(cssparse.simple_text(CssType("rect", "svg")) == "svg|rect")
+
+    test.case("an attribute with no operator prints as its name alone")
+    test.assert(cssparse.simple_text(CssAttr("href", CssExists, "")) == "[href]")
+    test.assert(cssparse.simple_text(CssAttr("href", CssEquals, "/a"))
+                == "[href=\"/a\"]")
+    test.assert(cssparse.simple_text(CssPseudoClass(CssRoot)) == ":root")
+
+    test.case("the general sibling combinator, which is the fourth spelling")
+    test.assert(cssparse.combinator_text(CssSibling) == " ~ ")
+
+    test.case("a step of minus one, and an offset below zero")
+    test.assert(cssparse.pseudo_text(CssNthChild(0 - 1, 3)) == ":nth-child(-n+3)")
+    test.assert(cssparse.pseudo_text(CssNthChild(2, 0 - 1)) == ":nth-child(2n-1)")
+
+    test.case("a negation's class names are names the selector mentions")
+    match cssparse.parse("a:not(.x)")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            let names = cssparse.class_names(selector)
+            test.assert(list.len(names) == 1)
+            test.assert(names[0] == "x")
+
+    test.case("and so are the tag names inside it")
+    match cssparse.parse("a:not(p)")
+        Err(fault)   => test.fail(fault.message())
+        Ok(selector) =>
+            let tags = cssparse.type_names(selector)
+            test.assert(list.len(tags) == 2)
+            test.assert(tags[0] == "a")
+            test.assert(tags[1] == "p")
+
+@test
+fn test_every_catalogue_entry_answers_all_three_questions() [io]
+    // What is it called, why is it not here, and what code goes in the
+    // metric: a tool that refuses a selector needs all three.
+    test.case("a name and a reason for each entry")
+    test.assert(str.len(csserror.unsupported_name(CssLevel4AttrFlags)) > 0)
+    test.assert(str.len(csserror.unsupported_name(CssStatePseudoClass)) > 0)
+    test.assert(str.len(csserror.unsupported_name(CssNamespacePrefix)) > 0)
+    test.assert(str.len(csserror.unsupported_reason(CssLevel4NthOf)) > 0)
+    test.assert(str.len(csserror.unsupported_reason(CssLevel4Linguistic)) > 0)
+    test.assert(str.len(csserror.unsupported_reason(CssPseudoElement)) > 0)
+
+    test.case("a stable code for each entry")
+    test.assert(csserror.unsupported_code(CssLevel4NthOf) == "level4_nth_of")
+    test.assert(csserror.unsupported_code(CssLevel4AttrFlags) == "level4_attr_flags")
+    test.assert(csserror.unsupported_code(CssLevel4Linguistic) == "level4_linguistic")
+    test.assert(csserror.unsupported_code(CssNamespacePrefix) == "namespace_prefix")
+
+    test.case("and the linguistic and link names are filed under their own reason")
+    match csserror.unsupported_for("dir")
+        Some(entry) => test.assert(csserror.unsupported_code(entry) == "level4_linguistic")
+        None        => test.fail(":dir() is in the catalogue")
+    match csserror.unsupported_for("any-link")
+        Some(entry) => test.assert(csserror.unsupported_code(entry) == "level4_linguistic")
+        None        => test.fail(":any-link is in the catalogue")
+
+    test.case("every fault has a code of its own")
+    test.assert(csserror.code(CssBadOperator(1, "!=")) == "bad_operator")
+    test.assert(csserror.code(CssUnknownPseudo(1, "hovr")) == "unknown_pseudo")
+    test.assert(csserror.code(CssBadNth(1, "x")) == "bad_nth")
+    test.assert(csserror.code(CssBadNegation(1)) == "bad_negation")
+    test.assert(csserror.code(CssDanglingCombinator(1)) == "dangling_combinator")
+    test.assert(csserror.code(CssNotImplemented(1, "hover", CssStatePseudoClass))
+                == "not_implemented")
+
+@test
+fn test_a_fault_names_the_byte_it_is_about_or_says_there_is_none() [io]
+    test.case("a byte is shown in quotes")
+    test.assert(str.contains(CssUnexpected(3, '!').message(), "'!'"))
+
+    test.case("and the end of the selector is said rather than shown")
+    test.assert(str.contains(CssUnexpected(3, 0 - 1).message(),
+                            "the end of the selector"))
+
+    test.case("every arm of the message has words in it")
+    test.assert(str.len(CssUnclosed(1, '[').message()) > 0)
+    test.assert(str.len(CssBadOperator(4, "!=").message()) > 0)
+    test.assert(str.len(CssUnknownPseudo(2, "hovr").message()) > 0)
+    test.assert(str.len(CssBadNth(5, "2n+").message()) > 0)
+    test.assert(str.len(CssBadNegation(1).message()) > 0)
+    test.assert(str.len(CssDanglingCombinator(2).message()) > 0)
+
+@test
+fn test_an_attribute_value_passes_every_operator_section_6_3_defines() [io]
+    let doc = htmlparse.parse("<a href=\"/a/b.pdf\" class=\"row on\" lang=\"en-US\">x</a>")
+
+    test.case("present, whatever its value")
+    test.assert(count_of(doc, "[href]") == 1)
+    test.assert(count_of(doc, "[title]") == 0)
+
+    test.case("exactly equal")
+    test.assert(count_of(doc, "[class=\"row on\"]") == 1)
+
+    test.case("a word of a whitespace-separated list")
+    test.assert(count_of(doc, "[class~=\"on\"]") == 1)
+    test.assert(count_of(doc, "[class~=\"ow\"]") == 0)
+    test.assert(count_of(doc, "[class~=\"\"]") == 0)
+
+    test.case("a language subtag")
+    test.assert(count_of(doc, "[lang|=\"en\"]") == 1)
+    test.assert(count_of(doc, "[lang|=\"e\"]") == 0)
+
+    test.case("a prefix, a suffix and a substring")
+    test.assert(count_of(doc, "[href^=\"/a\"]") == 1)
+    test.assert(count_of(doc, "[href$=\".pdf\"]") == 1)
+    test.assert(count_of(doc, "[href*=\"b.p\"]") == 1)
+
+    test.case("and an empty operand matches nothing on the three string forms")
+    test.assert(count_of(doc, "[href^=\"\"]") == 0)
+    test.assert(count_of(doc, "[href$=\"\"]") == 0)
+    test.assert(count_of(doc, "[href*=\"\"]") == 0)
+
+@test
+fn test_a_position_is_answered_for_an_element_and_zero_for_anything_else() [io]
+    let doc = page()
+
+    test.case("the document node is not an element, so no count is about it")
+    test.assert(cssmatch.child_position(doc, htmltree.root(doc)) == 0)
+    test.assert(cssmatch.type_position(doc, htmltree.root(doc)) == 0)
+    test.assert(cssmatch.sibling_count(doc, htmltree.root(doc)) == 0)
+    test.assert(not cssmatch.matches_simple(doc, htmltree.root(doc), CssUniversal))
+    test.assert(not cssmatch.matches_simple(doc, htmltree.root(doc),
+                                            CssType("main", "")))
+
+    test.case("an index outside the document answers the same way")
+    test.assert(cssmatch.child_position(doc, 9999) == 0)
+    test.assert(cssmatch.type_position(doc, 9999) == 0)
+    test.assert(cssmatch.sibling_count(doc, 9999) == 0)
+
+    test.case("a walk from one matches nothing rather than something wrong")
+    test.assert(list.len(cssmatch.select_all(doc, 9999, compiled("li"))) == 0)
+    test.assert(cssmatch.select(doc, 9999, compiled("li")) == htmltree.NO_NODE)
+    test.assert(cssmatch.closest(doc, 9999, compiled("li")) == htmltree.NO_NODE)
+    test.assert(not cssmatch.matches(doc, 9999, compiled("*")))
+
+    test.case("a compound asked about a non-element is false")
+    match cssparse.parse_one("li.row")
+        Err(fault)  => test.fail(fault.message())
+        Ok(complex) =>
+            test.assert(not cssmatch.matches_compound(doc, htmltree.root(doc),
+                                                      complex.compounds[0]))
+
+    test.case("a selector with no alternatives matches no node")
+    test.assert(not cssmatch.matches(doc, htmltree.root(doc), compiled("")))
+
+@test
+fn test_the_of_type_kinds_count_only_siblings_with_the_same_tag() [io]
+    // The API suite asserts the last and the only one of a type, so the
+    // first and the two counting forms are asserted here.
+    let doc = htmlparse.parse("<div><p>a</p><span>b</span><p>c</p></div>")
+
+    test.case("the first of a type is the first one with that tag")
+    test.assert(count_of(doc, "p:first-of-type") == 1)
+    test.assert(count_of(doc, "span:first-of-type") == 1)
+
+    test.case("and the two that count from either end of the same run")
+    test.assert(count_of(doc, "p:nth-of-type(2)") == 1)
+    test.assert(count_of(doc, "p:nth-last-of-type(1)") == 1)
+    test.assert(count_of(doc, "span:nth-of-type(2)") == 0)
+
+@test
+fn test_a_walk_that_fails_answers_false_and_not_the_wrong_node() [io]
+    let doc = page()
+
+    test.case("a sibling walk steps over the one that does not match")
+    test.assert(count_of(doc, "li:first-child ~ li") == 2)
+
+    test.case("and one that reaches the start of the list")
+    test.assert(count_of(doc, "p ~ li") == 0)
+
+    test.case("a descendant walk with nothing above to reach")
+    test.assert(count_of(doc, "table li") == 0)
+
+    test.case("a child walk from the outermost element stops there")
+    test.assert(count_of(doc, "* > main") == 0)
+    test.assert(count_of(doc, "* > ul") == 1)
+
+    test.case("a walk that reaches the end of the document answers what it has")
+    test.assert(list.len(cssmatch.select_first(doc, htmltree.root(doc),
+                                               compiled("li"), 99)) == 3)
+
+    test.case("an alternative no parser builds, holding no compound at all")
+    // Nothing is required of a node by an empty conjunction, which is
+    // why the walk answers true rather than reading a compound that is
+    // not there.
+    let empty = CssComplex { compounds: [], combinators: [] }
+    test.assert(cssmatch.matches_complex(doc, htmltree.root(doc), empty))
+
+@test
+fn test_a_position_beyond_two_to_the_sixty_first_is_held_to_it() [io]
+    test.case("a position past the upper bound is held to it, so the difference cannot overflow")
+    let every = CssNth { step: 1, offset: 0 }
+    test.assert(cssparse.nth_matches(every, 4611686018427387904))
+
+    test.case("and a position past the lower bound is held to it, so the series has not reached it")
+    test.assert(not cssparse.nth_matches(every, 0 - 4611686018427387904))

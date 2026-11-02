@@ -1,11 +1,9 @@
 // cssparse_tests.nv — the grammar of Level 3, and what the parsed
 // value lets a caller do.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// css-select-nv.cssparse.<fn>`.  What is asserted is that the parsed
-// selector is a tree a caller can read, that `:not()` is a field on a
-// compound rather than a nested selector, and that the an+b
-// micro-syntax is parsed into two numbers.
+// What is asserted is that the parsed selector is a tree a caller can
+// read, that `:not()` is a field on a compound rather than a nested
+// selector, and that the an+b micro-syntax is parsed into two numbers.
 
 use std.test
 use cssparse

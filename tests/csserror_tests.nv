@@ -1,11 +1,9 @@
 // csserror_tests.nv — the catalogue of what is not here, and why
 // refusing beats matching nothing.
 //
-// RED ON PURPOSE: every assertion reaches `not implemented:
-// css-select-nv.csserror.<fn>`.  What is asserted is that a valid
-// selector this package does not implement is told apart from a typo,
-// and that each entry in the catalogue carries a reason rather than
-// only a name.
+// What is asserted is that a valid selector this package does not
+// implement is told apart from a typo, and that each entry in the
+// catalogue carries a reason rather than only a name.
 
 use std.test
 use csserror
