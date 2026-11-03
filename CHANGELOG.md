@@ -5,7 +5,7 @@ All notable changes to css-select-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
-## Unreleased
+## 0.1.0 — 2026-11-03
 
 ### Changed
 
@@ -14,6 +14,8 @@ with the pre-1.0 rule that a breaking change bumps the MINOR number.
 ### Fixed
 
 - An `an+b` number of more than nine digits reads as 10^9, and `cssparse.nth_matches` holds its operands to 2^61, so a series of any size answers without overflowing.
+
+This release requires novo 0.23.0 or later.
 
 ## 0.1.0 — 2026-10-10
 
